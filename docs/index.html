@@ -1,0 +1,2012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ISOBrowser</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; height: 100vh; margin: 0; padding: 0; display: flex; }
+  #left { flex: 1 1 auto; min-width: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; }
+  #result { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 0 12px 12px; }
+  #preview-pane { flex: 0 0 0; min-width: 0; overflow: hidden; border-left: 1px solid #ccc; display: flex; flex-direction: column; background: Canvas; color: CanvasText; }
+  #preview-pane.open { flex: 0 0 40vw; }
+  #divider { flex: 0 0 2px; cursor: col-resize; background: transparent; user-select: none; touch-action: none; }
+  #divider:hover, #divider.dragging { background: #0078d4; }
+  h1 { font-size: 20px; }
+  .controls { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
+  #url { flex: 1; min-width: 0; height: 22px; box-sizing: border-box; padding: 2px 8px; font-size: 12px; border: 1px solid #888; border-radius: 4px; }
+  #filter { width: 100px; height: 20px; box-sizing: border-box; padding: 2px 8px; font-size: 12px; border: 1px solid #888; border-radius: 4px; }
+  #urlLink { flex: 0 1 auto; max-width: 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 100; display: flex; align-items: center; justify-content: center; }
+  .modal { background: Canvas; color: CanvasText; border: 1px solid #888; border-radius: 8px; min-width: 560px; max-width: 80vw; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25); }
+  .modal-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
+  .modal-title { flex: 1; font-size: 14px; font-weight: 600; }
+  .modal-close { font-size: 20px; line-height: 1; cursor: pointer; color: #888; flex-shrink: 0; }
+  .modal-close:hover { color: #c00; }
+  .modal-body { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+  .modal-row { display: flex; gap: 8px; align-items: center; }
+  .modal-row #parse { margin-left: auto; }
+  .modal-row.right { justify-content: flex-end; }
+  .modal-row #url { flex: 1; }
+  button { height: 22px; box-sizing: border-box; padding: 2px 10px; font-size: 12px; cursor: pointer; border: 1px solid #888; border-radius: 6px; background: #f0f0f0; color: #111; }
+  button.active { background: #0078d4; color: #fff; border-color: #0078d4; }
+  .view-header, .tree-row { display: flex; align-items: center; gap: 8px; font-family: ui-monospace, Consolas, monospace; font-size: 14px; }
+  .view-header { position: sticky; top: 0; background: Canvas; font-weight: 600; border-bottom: 1px solid #e0e0e0; padding: 2px 0; z-index: 1; }
+  .tree-row { border-bottom: 1px solid #e0e0e0; }
+  .list > .tree-row:nth-child(even), .inner-list > .tree-row:nth-child(even) { background: rgba(0, 0, 0, 0.03); }
+  .tree-row.depth-odd { background: rgba(0, 0, 0, 0.03); }
+  .tree-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
+  .tree-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid-table { display: grid; grid-template-columns: minmax(max-content, 1fr) 80px 130px; column-gap: 0px; width: max-content; min-width: 100%; }
+  .grid-table .view-header, .grid-table .list, .grid-table .tree-row,
+  .grid-table .tree-node, .grid-table .tree-children { display: contents; }
+  .grid-table .tree-name, .grid-table .tree-size, .grid-table .tree-date { border-bottom: 1px solid #e0e0e0; box-sizing: border-box; white-space: nowrap; }
+  .grid-table .tree-name { padding-left: calc(var(--level, 0) * 18px); }
+  .grid-table .preview-icon { position: sticky; right: 210px; background: Canvas; }
+  .grid-table .tree-size, .grid-table .tree-date { background: Canvas; position: sticky; padding: 0 4px; }
+  .grid-table .tree-size { right: 130px; display: flex; align-items: center; justify-content: flex-end; }
+  .grid-table .tree-date { right: 0; display: flex; align-items: center; }
+  .grid-table .view-header .tree-name { position: sticky; top: 0; background: Canvas; font-weight: 600; z-index: 1; padding-top: 2px; padding-bottom: 2px; }
+  .grid-table .view-header .tree-size, .grid-table .view-header .tree-date { top: 0; font-weight: 600; z-index: 1; padding-top: 2px; padding-bottom: 2px; }
+  .grid-table.tree-view .tree-row.depth-odd .tree-name { background: rgba(0, 0, 0, 0.03); }
+  .grid-table.flat-view .list > .tree-row:nth-child(even) .tree-name { background: rgba(0, 0, 0, 0.03); }
+  .tree-name.loading::after { content: ''; display: inline-block; width: 10px; height: 10px; margin-left: 6px; border: 2px solid rgba(128,128,128,0.35); border-top-color: #0078d4; border-radius: 50%; vertical-align: -1px; animation: isospin 0.8s linear infinite; position: sticky; right: 210px; background: Canvas; }
+  @keyframes isospin { to { transform: rotate(360deg); } }
+  .tree-date { width: 130px; flex-shrink: 0; color: #666; }
+  .tree-size { width: 80px; flex-shrink: 0; text-align: right; color: #666; }
+  .file-desc { color: #999; font-size: 12px; flex-shrink: 0; }
+  .dir { cursor: pointer; user-select: none; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dir::before { content: "▸ "; }
+  .dir.open::before { content: "▾ "; }
+  .file::before { content: "▸ "; visibility: hidden; }
+  a { color: #0078d4; text-decoration: none; }
+  a:visited { color: #7a3fa0; }
+  a:hover { text-decoration: underline; }
+  .hidden { display: none !important; }
+  .preview-icon { cursor: pointer; opacity: 1; font-size: 12px; flex-shrink: 0; height: 100%; width: 18px; margin-left: 6px; display: flex; align-items: center; justify-content: center; }
+  .preview-icon:hover { opacity: 1; }
+  .preview-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #e0e0e0; flex-shrink: 0; }
+  .preview-title { flex: 0 1 auto; max-width: 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .preview-close { font-size: 20px; line-height: 1; cursor: pointer; color: #888; flex-shrink: 0; }
+  .preview-close:hover { color: #c00; }
+  .preview-1to1 { font-size: 12px; height: 20px; padding: 2px 8px; cursor: pointer; border: 1px solid #888; border-radius: 4px; background: #f0f0f0; color: #111; flex-shrink: 0; }
+  .preview-zoom { display: flex; gap: 4px; flex-shrink: 0; }
+  .preview-zoom button { font-size: 12px; height: 20px; padding: 2px 6px; cursor: pointer; border: 1px solid #888; border-radius: 4px; background: #f0f0f0; color: #111; }
+  .preview-content { overflow: hidden; flex: 1; display: flex; align-items: center; justify-content: center; position: relative; }
+  .preview-content img { transform-origin: center; cursor: grab; user-select: none; }
+  .preview-content img.dragging { cursor: grabbing; }
+  .preview-content audio { width: 100%; }
+  .preview-content iframe { width: 100%; height: 100%; border: 0; background: Canvas; }
+  .preview-content pre { width: 100%; height: 100%; margin: 0; padding: 12px; box-sizing: border-box; overflow: auto; text-align: left; font-family: ui-monospace, Consolas, monospace; font-size: 13px; white-space: pre; }
+  .inner-list { width: 100%; height: 100%; overflow: auto; text-align: left; }
+  .nav-overlay { position: absolute; inset: 0; background: Canvas; color: CanvasText; z-index: 10; display: flex; flex-direction: column; }
+  .nav-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #e0e0e0; flex-shrink: 0; }
+  .nav-title { flex: 0 1 auto; max-width: 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .nav-close { font-size: 20px; line-height: 1; cursor: pointer; color: #888; flex-shrink: 0; }
+  .nav-close:hover { color: #c00; }
+  .controls button, .nav-head button { height: 20px; }
+  #modeTree, .nav-mode-tree, .preview-1to1 { margin-left: auto; }
+  .nav-filter { width: 100px; height: 20px; box-sizing: border-box; padding: 2px 8px; font-size: 12px; border: 1px solid #888; border-radius: 4px; }
+  .nav-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 12px 12px; }
+  .nav-status, .preview-status { flex-shrink: 1; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: #666; white-space: nowrap; }
+  @media (prefers-color-scheme: dark) {
+    button, .preview-1to1, .preview-zoom button { background: #3a3a3a; color: #e8e8e8; border-color: #666; }
+    button.active { background: #1a7fd4; color: #fff; border-color: #1a7fd4; }
+    .nav-status, .preview-status { color: #a0a8b4; }
+    .view-header, .tree-row, .controls, .preview-head, .nav-head,
+    .grid-table .tree-name, .grid-table .tree-size, .grid-table .tree-date { border-bottom-color: #333; }
+    .list > .tree-row:nth-child(even), .inner-list > .tree-row:nth-child(even) { background: rgba(255, 255, 255, 0.04); }
+    .tree-row.depth-odd { background: rgba(255, 255, 255, 0.04); }
+    .tree-date, .tree-size { color: #c6ceda; }
+    .file-desc { color: #9aa4b2; }
+    a { color: #6cb6ff; }
+    a:visited { color: #b894e0; }
+  }
+</style>
+</head>
+<body>
+  <div id="left">
+    <div class="controls">
+      <button id="openDlg" title="Open URL"><img src="favicon.svg" alt="" style="width:16px;height:16px;vertical-align:middle"></button>
+      <a id="urlLink" href="#" target="_blank" rel="noopener"></a>
+      <span class="nav-status" id="mainStatus"></span>
+      <button id="modeTree" class="active" title="Tree">Tree</button>
+      <button id="modeFlat" title="List">List</button>
+      <input id="filter" type="text" placeholder="Filter by name...">
+    </div>
+    <div id="result"></div>
+  </div>
+  <div id="divider"></div>
+  <div id="preview-pane" class="hidden"></div>
+
+  <div id="urlDlg" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head"><span class="modal-title">Open archive</span><span class="modal-close" title="Close">×</span></div>
+      <div class="modal-body">
+        <div class="modal-row">
+          <span>💿</span>
+          <input id="url" type="text" placeholder="Paste an ISO/BIN/MDF/ZIP link (requires Range support)">
+          <button id="paste" title="Paste">📋</button>
+        </div>
+        <div class="modal-row">
+          <button id="openFile" title="Open local file">📂 Local file</button>
+          <button id="parse">🔍 Browse</button>
+        </div>
+        <input type="file" id="fileInput" accept=".iso,.bin,.mdf,.zip" class="hidden">
+      </div>
+    </div>
+  </div>
+
+  <div id="packDlg" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head"><span class="modal-title">Pack directory</span><span class="modal-close" id="packClose" title="Close">×</span></div>
+      <div class="modal-body">
+        <div id="packInfo"></div>
+        <div id="packProgress" class="hidden"></div>
+        <div class="modal-row right">
+          <button id="packCancel">Cancel</button>
+          <button id="packStart">📦 Pack</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const urlEl = document.getElementById('url');
+  const parseBtn = document.getElementById('parse');
+  const pasteBtn = document.getElementById('paste');
+  const modeTree = document.getElementById('modeTree');
+  const modeFlat = document.getElementById('modeFlat');
+  const filterEl = document.getElementById('filter');
+  const mainStatusEl = document.getElementById('mainStatus');
+  const resultEl = document.getElementById('result');
+  const openDlg = document.getElementById('openDlg');
+  const urlLink = document.getElementById('urlLink');
+  const urlDlg = document.getElementById('urlDlg');
+  const openFile = document.getElementById('openFile');
+  const fileInput = document.getElementById('fileInput');
+  const packDlg = document.getElementById('packDlg');
+  const packInfo = document.getElementById('packInfo');
+  const packProgress = document.getElementById('packProgress');
+  const packStart = document.getElementById('packStart');
+  const packCancel = document.getElementById('packCancel');
+  const packClose = document.getElementById('packClose');
+  let currentFile = null;
+  let currentHandle = null;
+
+  // Fill the URL box from a ?url= query parameter on load; otherwise restore the last used URL
+  const qpUrl = new URLSearchParams(location.search).get('url');
+  if (qpUrl) urlEl.value = qpUrl;
+  else {
+    try {
+      const saved = localStorage.getItem('isobrowser:url');
+      if (saved) urlEl.value = saved;
+    } catch (e) {}
+  }
+
+  let currentUrl = '';
+
+  function showUrlDialog() {
+    urlDlg.classList.remove('hidden');
+    urlEl.focus();
+  }
+  function hideUrlDialog() {
+    urlDlg.classList.add('hidden');
+  }
+  let mode = 'tree';
+  let treeView = null, treeRoot = null;    // tree view root + root children container
+  let flatView = null, flatList = null;    // flat view root + list container
+  let filterView = null, filterList = null;// filter view
+  let childBoxes = null;                   // Map: dir path -> its children container
+  let lastChild = null;                    // Map: dir path -> the row new children are inserted after in the flat list
+  let allNodes = [];                       // all nodes [{name, path, isDir, size, date, depth}]
+  let sectorSize = 2048;                   // sector size in bytes: 2048 (ISO) or 2352 (BIN/MDF raw Mode 1)
+  let dataOffset = 0;                      // offset of user data within each sector (16 for 2352)
+  let archiveType = 'iso';                 // 'iso' | 'zip'
+  let isJoliet = false;                    // ISO: volume uses Joliet (UCS-2) names
+  let rootLba = 0, rootSize = 0;           // ISO: root directory location (for SW fallback)
+  let zipFiles = null;                     // ZIP: complete file map, ready before progressive render finishes
+  let dirSize = null;                      // Map: dir path -> accumulated descendant size
+  let nodeByPath = null;                   // Map: node path -> node
+  let parseGen = 0;                        // generation counter: the latest parse wins
+
+  async function readRange(url, start, length) {
+    if (currentFile) {
+      return new Uint8Array(await currentFile.slice(start, start + length).arrayBuffer());
+    }
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: { Range: 'bytes=' + start + '-' + (start + length - 1) }
+      });
+    } catch (err) {
+      throw new Error('Network Error (CORS?)');
+    }
+    if (res.status === 206) {
+      const buf = await res.arrayBuffer();
+      return new Uint8Array(buf);
+    }
+    // Non-206: cancel the body and throw a clear, specific error
+    if (res.body) res.body.cancel().catch(() => {});
+    if (res.status === 200) {
+      throw new Error('Server does not support Range requests (got 200)');
+    }
+    if (res.status === 404) {
+      throw new Error('HTTP 404 Not Found');
+    }
+    if (res.status === 403) {
+      throw new Error('HTTP 403 Forbidden');
+    }
+    throw new Error('HTTP ' + res.status + ' ' + (res.statusText || ''));
+  }
+
+  // Detect archive format: ISO 9660 (2048/2352-byte sectors) or ZIP
+  async function detectFormat(url) {
+    const probe = await readRange(url, 0, 65536);
+    const sig = (off) => off + 5 < probe.length && ascii(probe.subarray(off, off + 5)) === 'CD001';
+    if (sig(16 * 2048 + 1)) return { type: 'iso', sectorSize: 2048, dataOffset: 0 };
+    if (sig(16 * 2352 + 16 + 1)) return { type: 'iso', sectorSize: 2352, dataOffset: 16 };
+    if (probe.length >= 2 && probe[0] === 0x50 && probe[1] === 0x4B) return { type: 'zip' };  // "PK"
+    return null;
+  }
+
+  // Read size bytes of user data starting at logical sector lba (handles raw sector layout)
+  async function readData(url, lba, size) {
+    if (sectorSize === 2048) {
+      return readRange(url, lba * 2048, size);
+    }
+    const n = Math.ceil(size / 2048);
+    const raw = await readRange(url, lba * sectorSize, n * sectorSize);
+    const out = new Uint8Array(n * 2048);
+    for (let i = 0; i < n; i++) {
+      const s = i * sectorSize + dataOffset;
+      out.set(raw.subarray(s, s + 2048), i * 2048);
+    }
+    return out.subarray(0, size);
+  }
+
+  function u32(d, off) {
+    return (d[off] | (d[off + 1] << 8) | (d[off + 2] << 16) | (d[off + 3] << 24)) >>> 0;
+  }
+  function ascii(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i] & 0x7f);
+    return s;
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  function parseDate(rec) {
+    const y = 1900 + rec[18];
+    const mo = rec[19], d = rec[20], h = rec[21], mi = rec[22];
+    if (y < 1970 || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    return y + '-' + pad(mo) + '-' + pad(d) + ' ' + pad(h) + ':' + pad(mi);
+  }
+
+  function decodeUCS2(bytes) {
+    let s = '';
+    for (let i = 0; i + 1 < bytes.length; i += 2) {
+      s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
+    }
+    return s;
+  }
+  function latin1(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return s;
+  }
+
+  // Decode bytes to text: BOM -> HTML meta charset -> UTF-8 (strict) -> windows-1252 fallback
+  function decodeText(bytes) {
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+      return new TextDecoder('utf-8').decode(bytes.subarray(3));
+    }
+    if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+      return new TextDecoder('utf-16le').decode(bytes.subarray(2));
+    }
+    if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
+      return new TextDecoder('utf-16be').decode(bytes.subarray(2));
+    }
+    const head = latin1(bytes.subarray(0, Math.min(bytes.length, 2048)));
+    const m = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(head);
+    if (m) {
+      try { return new TextDecoder(m[1]).decode(bytes); } catch (e) {}
+    }
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch (e) { return new TextDecoder('windows-1252').decode(bytes); }
+  }
+
+  // ---- MHT (MHTML) support ----
+
+  function qpDecode(str) {
+    return str.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  }
+
+  function mhtDataUrl(bin, mime) {
+    return 'data:' + (mime || 'application/octet-stream') + ';base64,' + btoa(bin);
+  }
+
+  function resolveMhtRefs(html, resources) {
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('[src], [href]').forEach(el => {
+        const attr = el.hasAttribute('src') ? 'src' : 'href';
+        const val = (el.getAttribute(attr) || '').trim();
+        if (!val) return;
+        const key = val.toLowerCase();
+        let hit = resources[key];
+        if (!hit && key.startsWith('cid:')) hit = resources['cid:' + key.slice(4)];
+        if (!hit) hit = resources[key.split('/').pop()];
+        if (hit) el.setAttribute(attr, hit);
+      });
+      return doc.documentElement.outerHTML;
+    } catch (e) {
+      return html;
+    }
+  }
+
+  // Serve a nested-archive HTML via the SW (resources live inside the nested archive)
+  function waitForController() {
+    return new Promise(resolve => {
+      if (navigator.serviceWorker.controller) return resolve();
+      const t = setTimeout(resolve, 3000);
+      navigator.serviceWorker.addEventListener('controllerchange', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+  }
+
+  async function previewInnerHtmlWithSw(iframe, node, htmlText, ov) {
+    if ('serviceWorker' in navigator && !navigator.serviceWorker.controller) {
+      await waitForController();
+    }
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+      iframe.srcdoc = htmlText;  // fallback
+      return;
+    }
+    try {
+      const sessionId = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const container = node.innerContainer;
+      const entry = node.path.slice(1);
+      const files = {};
+      const dirs = {};
+      if (container.type === 'zip') {
+        if (container.files) Object.assign(files, container.files);
+      } else {
+        const inner = { containerLba: container.lba, sectorSize: container.sectorSize, dataOffset: container.dataOffset };
+        for (const n of (node.archiveNodes || [])) {
+          const key = n.path.slice(1).toLowerCase();
+          if (n.isDir) dirs[key] = { lba: n.lba, size: n.size, inner };
+          else files[key] = { lba: n.lba, size: n.size, inner };
+        }
+      }
+      await new Promise(resolve => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resolve();
+        navigator.serviceWorker.controller.postMessage({
+          type: 'set-session', sessionId,
+          session: { url: currentHandle || currentFile || currentUrl, archiveType: 'iso', sectorSize, dataOffset, entry, files, dirs, isJoliet: container.isJoliet, html: htmlText }
+        }, [channel.port2]);
+      });
+      iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-downloads allow-top-navigation');
+      iframe.src = '_iso/' + sessionId + '/' + entry.split('/').map(encodeURIComponent).join('/');
+      ov._sessionId = sessionId;
+    } catch (e) {
+      iframe.srcdoc = htmlText;
+    }
+  }
+
+  // Parse a MHT/MHTML file into a self-contained HTML document (resources inlined as data: URLs)
+  function parseMht(bytes) {
+    const text = latin1(bytes);
+    const bm = /boundary\s*=\s*"([^"]+)"/i.exec(text) || /boundary\s*=\s*([^\s;]+)/i.exec(text);
+    if (!bm) throw new Error('MHT boundary not found');
+    const delim = '--' + bm[1];
+    const parts = text.split(delim);
+    const resources = {};
+    let html = '';
+
+    for (let i = 1; i < parts.length; i++) {
+      let part = parts[i].replace(/^\r?\n/, '');
+      if (part.startsWith('--')) break;  // closing delimiter
+      let header = '', body = part;
+      const crlf = part.indexOf('\r\n\r\n'), lf = part.indexOf('\n\n');
+      if (crlf !== -1 && (lf === -1 || crlf <= lf)) { header = part.slice(0, crlf); body = part.slice(crlf + 4); }
+      else if (lf !== -1) { header = part.slice(0, lf); body = part.slice(lf + 2); }
+
+      const get = (n) => { const m = new RegExp('^' + n + '\\s*:\\s*([^\\r\\n]+)', 'im').exec(header); return m ? m[1].trim() : ''; };
+      const ctype = get('content-type').split(';')[0].trim().toLowerCase();
+      const cloc = get('content-location');
+      const cid = get('content-id').replace(/^<|>$/g, '');
+      const cte = get('content-transfer-encoding').toLowerCase();
+      const isHtml = ctype === 'text/html' || ctype === 'text/htm';
+
+      body = body.replace(/\r?\n$/, '');
+      if (cte === 'base64') {
+        const clean = body.replace(/\s+/g, '');
+        if (isHtml) html = atob(clean);
+        else {
+          const du = 'data:' + (ctype || 'application/octet-stream') + ';base64,' + clean;
+          if (cloc) { resources[cloc.toLowerCase()] = du; const bn = cloc.split('/').pop(); if (bn) resources[bn.toLowerCase()] = du; }
+          if (cid) resources['cid:' + cid.toLowerCase()] = du;
+        }
+      } else {
+        const bin = cte === 'quoted-printable' ? qpDecode(body) : body;
+        if (isHtml) html = bin;
+        else {
+          const du = mhtDataUrl(bin, ctype);
+          if (cloc) { resources[cloc.toLowerCase()] = du; const bn = cloc.split('/').pop(); if (bn) resources[bn.toLowerCase()] = du; }
+          if (cid) resources['cid:' + cid.toLowerCase()] = du;
+        }
+      }
+    }
+
+    if (!html) throw new Error('MHT HTML part not found');
+    return resolveMhtRefs(html, resources);
+  }
+
+  // Joliet escape sequences "%/@"(level1), "%/C"(level2), "%/E"(level3)
+  function isJolietSVD(svd) {
+    return svd[88] === 0x25 && svd[89] === 0x2f; // "%/"
+  }
+
+  // Read volume descriptors (from sector 16), return {pvd, svd}
+  async function readVolumeDescriptors(url) {
+    const block = await readData(url, 16, 32768);
+    let pvd = null, svd = null;
+    for (let i = 0; i + 2048 <= block.length; i += 2048) {
+      const data = block.subarray(i, i + 2048);
+      const type = data[0];
+      if (type === 0xFF) break;
+      if (ascii(data.subarray(1, 6)) !== 'CD001') break;
+      if (type === 1) pvd = data;
+      else if (type === 2 && isJolietSVD(data)) svd = data;
+      if (pvd && svd) break;
+    }
+    return { pvd, svd };
+  }
+
+  // Parse Rock Ridge SUSP NM long name; returns empty string if none
+  function rockRidgeName(rec) {
+    const nameLen = rec[32];
+    let su = 33 + nameLen;
+    if (su & 1) su++;
+    const len = rec.length;
+    const parts = [];
+    while (su + 4 <= len) {
+      const sig = String.fromCharCode(rec[su]) + String.fromCharCode(rec[su + 1]);
+      const entryLen = rec[su + 2];
+      if (entryLen < 4 || su + entryLen > len) break;
+      if (sig === 'NM') {
+        const flags = rec[su + 4];
+        if (!(flags & 0x06)) {           // skip CURRENT(0x02)/PARENT(0x04)
+          parts.push(latin1(rec.subarray(su + 5, su + entryLen)));
+        }
+        if (!(flags & 0x01)) {           // CONTINUE ends
+          return parts.join('');
+        }
+      }
+      su += entryLen;
+    }
+    return '';
+  }
+
+  function parseDirEntries(data, isJoliet, useRR) {
+    const entries = [];
+    const len = data.length;
+    let off = 0;
+    while (off + 33 < len) {
+      const reclen = data[off];
+      if (reclen === 0) {
+        off = ((off >> 11) + 1) << 11;
+        if (off >= len) break;
+        continue;
+      }
+      const nameLen = data[off + 32];
+      const raw = data.subarray(off + 33, off + 33 + nameLen);
+      // skip "." / "..": single byte 0x00/0x01 in ISO 9660 and some Joliet, UCS-2 0x0000/0x0001 in standard Joliet
+      if ((nameLen === 1 && (raw[0] === 0 || raw[0] === 1)) ||
+          (nameLen === 2 && raw[0] === 0 && (raw[1] === 0 || raw[1] === 1))) {
+        off += reclen; continue;
+      }
+      const rec = data.subarray(off, off + reclen);
+      let name = isJoliet ? decodeUCS2(raw) : ascii(raw).trim();
+      name = name.split(';')[0];          // strip ;1 version suffix
+      if (useRR && !isJoliet) {
+        const rr = rockRidgeName(rec);
+        if (rr) name = rr;
+      }
+      const isDir = (data[off + 25] & 0x02) !== 0;
+      const lba = u32(data, off + 2);
+      const size = u32(data, off + 10);
+      const date = parseDate(rec);
+      entries.push({ name, isDir, lba, size, date });
+      off += reclen;
+    }
+    // directories first, then by name (Windows Explorer style)
+    entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    });
+    return entries;
+  }
+
+  function fileLink(path) {
+    if (path === '/') return currentUrl;
+    const segs = path.split('/').filter(s => s !== '');
+    return currentUrl + '/' + segs.map(encodeURIComponent).join('/');
+  }
+
+  // Extract the file name (no path, no query) from a URL
+  function fileNameFromUrl(url) {
+    const clean = url.split(/[?#]/)[0].replace(/\/+$/, '');
+    const segs = clean.split('/');
+    const name = segs[segs.length - 1];
+    try { return decodeURIComponent(name); } catch (e) { return name; }
+  }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  function fmtStatus(totalBytes, fileCount, dirCount, vol, loading) {
+    const parts = [];
+    parts.push(dirCount + ' dir' + (dirCount === 1 ? '' : 's'));
+    parts.push(fileCount + ' file' + (fileCount === 1 ? '' : 's'));
+    parts.push(fmtSize(totalBytes));
+    if (vol) parts.push(vol);
+    const s = parts.join(' · ');
+    return loading ? s + '...' : s;
+  }
+
+  function parentPathOf(path) {
+    const idx = path.lastIndexOf('/');
+    return idx <= 0 ? '' : path.slice(0, idx);
+  }
+
+  // Add a file's size to all its ancestor directories, updating their size cells live
+  function onFileAdded(node, dirSize, nodeByPath) {
+    if (!node.size) return;
+    let p = parentPathOf(node.path);
+    while (p !== '') {
+      if (dirSize.has(p)) {
+        const total = dirSize.get(p) + node.size;
+        dirSize.set(p, total);
+        const dn = nodeByPath.get(p);
+        if (dn) {
+          const text = fmtSize(total);
+          if (dn.treeSizeEl) dn.treeSizeEl.textContent = text;
+          if (dn.flatSizeEl) dn.flatSizeEl.textContent = text;
+        }
+      }
+      p = parentPathOf(p);
+    }
+  }
+
+  // True if the token looks like a date (e.g. 01/02/90, 01-02-1990, 2024-01-02)
+  function isDateToken(t) {
+    return /^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/.test(t) || /^\d{4}-\d{2}-\d{2}$/.test(t);
+  }
+
+  // Parse FILES.BBS text into { lowercase filename: description }
+  function parseFilesBbs(text) {
+    const lines = text.split(/\r?\n/);
+    const result = {};
+    let cur = null;
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      if (line[0] === ' ' || line[0] === '|') {
+        // continuation line of the previous file's description
+        if (cur) {
+          const extra = t.replace(/^\|?\s*/, '');
+          if (extra) result[cur] = (result[cur] ? result[cur] + ' ' : '') + extra;
+        }
+        continue;
+      }
+      const tok = t.split(/\s+/);
+      const name = tok[0];
+      if (!name.includes('.')) continue;  // not a file line (header, etc.)
+      let i = 1;
+      if (i < tok.length && /^\d+$/.test(tok[i])) i++;      // optional size
+      if (i < tok.length && isDateToken(tok[i])) i++;        // optional date
+      const desc = tok.slice(i).join(' ');
+      cur = name.toLowerCase();
+      if (desc) result[cur] = desc;
+    }
+    return result;
+  }
+
+  // Insert/update a node's description span in a name cell (before the preview icon)
+  function setDescSpan(nameEl, node) {
+    if (!nameEl) return;
+    const old = nameEl.querySelector('.file-desc');
+    if (old) old.remove();
+    if (!node._desc) return;
+    const span = document.createElement('span');
+    span.className = 'file-desc';
+    span.textContent = node._desc;
+    const icon = nameEl.querySelector('.preview-icon');
+    if (icon) nameEl.insertBefore(span, icon);
+    else nameEl.appendChild(span);
+  }
+
+  // Parse DESCRIPT.ION (4DOS/JP Software) text into { lowercase filename: description }
+  function parseDescriptionIon(text) {
+    const lines = text.split(/\r?\n/);
+    const result = {};
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let name, desc;
+      if (line[0] === '"') {
+        const end = line.indexOf('"', 1);
+        if (end === -1) continue;
+        name = line.slice(1, end);
+        desc = line.slice(end + 1).trim();
+      } else {
+        const sp = line.indexOf(' ');
+        if (sp === -1) continue;
+        name = line.slice(0, sp);
+        desc = line.slice(sp + 1).trim();
+      }
+      if (name && desc) result[name.toLowerCase()] = desc;
+    }
+    return result;
+  }
+
+  // Extract FILES.BBS / DESCRIPT.ION descriptions and attach them to matching files
+  async function applyFileDescriptions() {
+    const listNodes = allNodes.filter(n => !n.isDir && (
+      n.name.toLowerCase() === 'files.bbs' || n.name.toLowerCase() === 'descript.ion'
+    ));
+    for (const list of listNodes) {
+      const dir = parentPathOf(list.path);
+      const isIon = list.name.toLowerCase() === 'descript.ion';
+      let descMap;
+      try {
+        const text = decodeText(await readFileContent(list));
+        descMap = isIon ? parseDescriptionIon(text) : parseFilesBbs(text);
+      } catch (e) {
+        continue;
+      }
+      for (const n of allNodes) {
+        if (n.isDir || parentPathOf(n.path) !== dir || n._desc) continue;
+        const d = descMap[n.name.toLowerCase()];
+        if (d) {
+          n._desc = d;
+          setDescSpan(n.treeNameSpan, n);
+          setDescSpan(n.flatNameSpan, n);
+        }
+      }
+    }
+  }
+
+  function makeView() {
+    const view = document.createElement('div');
+    view.className = 'view';
+    const header = document.createElement('div');
+    header.className = 'view-header';
+    header.innerHTML = '<span class="tree-name">Name</span><span class="tree-size">Size</span><span class="tree-date">Date</span>';
+    const list = document.createElement('div');
+    list.className = 'list';
+    view.append(header, list);
+    return { view, list };
+  }
+
+  // Collapse/expand: just toggle the children container's visibility (children are already nested inside it)
+  function toggleDir(node) {
+    const box = node._childrenBox;
+    if (!box) return;
+    const open = box.classList.contains('hidden');
+    box.classList.toggle('hidden', !open);
+    if (node.dirSpan) {
+      node.dirSpan.classList.toggle('open', open);
+      node.dirSpan.innerHTML = (open ? '📂' : '📁') + ' <span class="node-name">' + esc(node.name) + '</span>';
+    }
+  }
+
+  // Read a byte range [offset, offset+length) of a file starting at logical sector lba
+  async function readFileBytes(url, lba, offset, length) {
+    if (sectorSize === 2048) {
+      return readRange(url, lba * 2048 + offset, length);
+    }
+    const firstSector = Math.floor(offset / 2048);
+    const lastSector = Math.floor((offset + length - 1) / 2048);
+    const n = lastSector - firstSector + 1;
+    const raw = await readRange(url, (lba + firstSector) * sectorSize, n * sectorSize);
+    const out = new Uint8Array(n * 2048);
+    for (let i = 0; i < n; i++) {
+      out.set(raw.subarray(i * sectorSize + dataOffset, i * sectorSize + dataOffset + 2048), i * 2048);
+    }
+    const start = offset - firstSector * 2048;
+    return out.slice(start, start + length);
+  }
+
+  // ---- ZIP archive support ----
+
+  // Parse an MS-DOS date/time pair
+  function parseDosDateTime(date, time) {
+    const y = 1980 + ((date >> 9) & 0x7F);
+    const mo = (date >> 5) & 0x0F;
+    const d = date & 0x1F;
+    const h = (time >> 11) & 0x1F;
+    const mi = (time >> 5) & 0x3F;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    return y + '-' + pad(mo) + '-' + pad(d) + ' ' + pad(h) + ':' + pad(mi);
+  }
+
+  // Read the End of Central Directory record (searched backward from the end)
+  async function readZipEOCD(url) {
+    let size;
+    if (currentFile) {
+      size = currentFile.size;
+    } else {
+      try {
+        const head = await fetch(url, { method: 'HEAD' });
+        size = parseInt(head.headers.get('content-length') || '0', 10);
+      } catch (err) {
+        throw new Error('Network Error (CORS?)');
+      }
+    }
+    if (!size) throw new Error('Cannot determine archive size');
+    const tailLen = Math.min(size, 22 + 65535);
+    const tail = await readRange(url, size - tailLen, tailLen);
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail[i] === 0x50 && tail[i + 1] === 0x4B && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) {
+        const count = tail[i + 10] | (tail[i + 11] << 8);
+        const cdSize = u32(tail, i + 12);
+        const cdOffset = u32(tail, i + 16);
+        if (count === 0xFFFF || cdOffset === 0xFFFFFFFF || cdSize === 0xFFFFFFFF) {
+          throw new Error('ZIP64 archives are not supported yet');
+        }
+        return { cdOffset, cdSize };
+      }
+    }
+    throw new Error('ZIP End of Central Directory not found');
+  }
+
+  // Parse central directory entries into a flat list
+  function parseZipEntries(cd) {
+    const entries = [];
+    let off = 0;
+    while (off + 46 <= cd.length) {
+      const sig = u32(cd, off);
+      if (sig === 0x02014b50) {
+        const method = cd[off + 10] | (cd[off + 11] << 8);
+        const time = cd[off + 12] | (cd[off + 13] << 8);
+        const date = cd[off + 14] | (cd[off + 15] << 8);
+        const compressedSize = u32(cd, off + 20);
+        const uncompressedSize = u32(cd, off + 24);
+        const nameLen = cd[off + 28] | (cd[off + 29] << 8);
+        const extraLen = cd[off + 30] | (cd[off + 31] << 8);
+        const commentLen = cd[off + 32] | (cd[off + 33] << 8);
+        const localOffset = u32(cd, off + 42);
+        const rawName = decodeText(cd.subarray(off + 46, off + 46 + nameLen)).replace(/\\/g, '/');
+        const isDir = rawName.endsWith('/');
+        entries.push({
+          name: isDir ? rawName.replace(/\/+$/, '') : rawName,
+          isDir,
+          method,
+          compressedSize,
+          size: uncompressedSize,
+          offset: localOffset,
+          date: parseDosDateTime(date, time)
+        });
+        off += 46 + nameLen + extraLen + commentLen;
+      } else if (sig === 0x06054b50 || sig === 0x05054b50) {
+        break;  // end of central directory / digital signature
+      } else {
+        break;
+      }
+    }
+    return entries;
+  }
+
+  // Build a sorted node list (directories + files, incl. implicit dirs) from flat ZIP entries
+  function buildZipNodes(entries) {
+    const dirSet = new Set();
+    for (const e of entries) {
+      const segs = e.name.split('/');
+      let cur = '';
+      for (let i = 0; i < segs.length - 1; i++) {
+        cur = cur ? cur + '/' + segs[i] : segs[i];
+        dirSet.add(cur);
+      }
+      if (e.isDir) dirSet.add(e.name);
+    }
+    const nodes = [];
+    for (const d of dirSet) {
+      const segs = d.split('/');
+      nodes.push({ name: segs[segs.length - 1], path: '/' + d, isDir: true, size: 0, date: '', depth: segs.length - 1 });
+    }
+    for (const e of entries) {
+      if (e.isDir) continue;
+      const segs = e.name.split('/');
+      nodes.push({
+        name: segs[segs.length - 1], path: '/' + e.name, isDir: false,
+        size: e.size, date: e.date, depth: segs.length - 1,
+        offset: e.offset, compressedSize: e.compressedSize, method: e.method
+      });
+    }
+    // BFS order (by depth) so the flat view's progressive insertion stays correct
+    nodes.sort((a, b) => {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    });
+    return nodes;
+  }
+
+  // Extract (decompress) a file's bytes from a ZIP
+  async function zipExtractFile(url, node) {
+    if (node.compressedSize === 0) return new Uint8Array(0);
+    const local = await readRange(url, node.offset, 30);
+    if (u32(local, 0) !== 0x04034b50) throw new Error('Bad ZIP local file header');
+    const nameLen = local[26] | (local[27] << 8);
+    const extraLen = local[28] | (local[29] << 8);
+    const dataStart = node.offset + 30 + nameLen + extraLen;
+    const compressed = await readRange(url, dataStart, node.compressedSize);
+    if (node.method === 0) return compressed;  // stored
+    if (node.method === 8) {                    // deflate
+      const ds = new DecompressionStream('deflate-raw');
+      const stream = new Blob([compressed]).stream().pipeThrough(ds);
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+    throw new Error('Unsupported ZIP compression method ' + node.method);
+  }
+
+  // Read a file's decompressed bytes (works for ISO, ZIP, and nested archives)
+  async function readFileContent(node) {
+    if (node.readFile) return await node.readFile();
+    if (archiveType === 'zip') return await zipExtractFile(currentUrl, node);
+    return await readData(currentUrl, node.lba, node.size);
+  }
+
+  // ---- Directory pack-to-zip ----
+
+  const CRC32_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+
+  function crc32(data) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < data.length; i++) {
+      crc = CRC32_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  async function deflateRaw(bytes) {
+    if (!bytes.length) return new Uint8Array(0);
+    const ds = new CompressionStream('deflate-raw');
+    const reader = ds.readable.getReader();
+    const writer = ds.writable.getWriter();
+    const chunks = [];
+    let total = 0;
+    const readLoop = (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.length;
+      }
+    })();
+    await writer.write(bytes);
+    await writer.close();
+    await readLoop;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+  }
+
+  function putU16(arr, off, v) {
+    arr[off] = v & 0xff;
+    arr[off + 1] = (v >> 8) & 0xff;
+  }
+  function putU32(arr, off, v) {
+    arr[off] = v & 0xff;
+    arr[off + 1] = (v >> 8) & 0xff;
+    arr[off + 2] = (v >> 16) & 0xff;
+    arr[off + 3] = (v >>> 24) & 0xff;
+  }
+
+  function collectDirFiles(dirNode) {
+    const prefix = dirNode.path + '/';
+    return allNodes.filter(n => !n.isDir && n.path.startsWith(prefix));
+  }
+
+  async function writeZip(files, basePath, write, shouldAbort, onProgress) {
+    const enc = new TextEncoder();
+    const now = new Date();
+    const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+    const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
+    const entries = [];
+    let offset = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      if (shouldAbort && shouldAbort()) throw new Error('aborted');
+      const f = files[i];
+      if (onProgress) onProgress(i, files.length);
+      else mainStatusEl.textContent = 'Packing ' + (i + 1) + '/' + files.length + '...';
+      const rel = f.path.slice(basePath.length).replace(/^\//, '');
+      const nameBytes = enc.encode(rel);
+      const data = await readFileContent(f);
+      const crc = crc32(data);
+      let method = 0, compressed = data;
+      if (data.length > 0) {
+        try {
+          const def = await deflateRaw(data);
+          if (def.length < data.length) { method = 8; compressed = def; }
+        } catch (e) {}
+      }
+
+      const lh = new Uint8Array(30 + nameBytes.length);
+      putU32(lh, 0, 0x04034b50);
+      putU16(lh, 4, 20);
+      putU16(lh, 6, 0);
+      putU16(lh, 8, method);
+      putU16(lh, 10, dosTime);
+      putU16(lh, 12, dosDate);
+      putU32(lh, 14, crc);
+      putU32(lh, 18, compressed.length);
+      putU32(lh, 22, data.length);
+      putU16(lh, 26, nameBytes.length);
+      putU16(lh, 28, 0);
+      lh.set(nameBytes, 30);
+      await write(lh);
+      await write(compressed);
+
+      entries.push({ nameBytes, crc, compressedSize: compressed.length, size: data.length, method, offset });
+      offset += lh.length + compressed.length;
+    }
+
+    const cdStart = offset;
+    let cdSize = 0;
+    for (const e of entries) {
+      const ch = new Uint8Array(46 + e.nameBytes.length);
+      putU32(ch, 0, 0x02014b50);
+      putU16(ch, 4, 20);
+      putU16(ch, 6, 20);
+      putU16(ch, 8, 0);
+      putU16(ch, 10, e.method);
+      putU16(ch, 12, dosTime);
+      putU16(ch, 14, dosDate);
+      putU32(ch, 16, e.crc);
+      putU32(ch, 20, e.compressedSize);
+      putU32(ch, 24, e.size);
+      putU16(ch, 28, e.nameBytes.length);
+      putU16(ch, 30, 0);
+      putU16(ch, 32, 0);
+      putU16(ch, 34, 0);
+      putU16(ch, 36, 0);
+      putU32(ch, 38, 0);
+      putU32(ch, 42, e.offset);
+      ch.set(e.nameBytes, 46);
+      await write(ch);
+      cdSize += ch.length;
+    }
+
+    const eocd = new Uint8Array(22);
+    putU32(eocd, 0, 0x06054b50);
+    putU16(eocd, 4, 0);
+    putU16(eocd, 6, 0);
+    putU16(eocd, 8, entries.length);
+    putU16(eocd, 10, entries.length);
+    putU32(eocd, 12, cdSize);
+    putU32(eocd, 16, cdStart);
+    putU16(eocd, 20, 0);
+    await write(eocd);
+  }
+
+  let packFiles = null, packBasePath = '', packZipName = '', packAbort = false;
+
+  function packDir(node) {
+    packFiles = collectDirFiles(node);
+    if (!packFiles.length) { alert('Directory is empty'); return; }
+    packBasePath = node.path;
+    packZipName = (node.name || 'archive') + '.zip';
+    packAbort = false;
+    packInfo.textContent = 'Pack ' + packFiles.length + ' file' + (packFiles.length === 1 ? '' : 's') + ' into ' + packZipName + '?';
+    packProgress.classList.add('hidden');
+    packStart.classList.remove('hidden');
+    packDlg.classList.remove('hidden');
+  }
+
+  function packTriggerDownload(chunks, zipName) {
+    const blob = new Blob(chunks, { type: 'application/zip' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = zipName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function packRun() {
+    packStart.classList.add('hidden');
+    packProgress.classList.remove('hidden');
+    const chunks = [];
+    try {
+      await writeZip(packFiles, packBasePath, (c) => chunks.push(c), () => packAbort, (i, n) => {
+        packProgress.textContent = 'Packing ' + (i + 1) + '/' + n + '...';
+      });
+      packDlg.classList.add('hidden');
+      packTriggerDownload(chunks, packZipName);
+    } catch (e) {
+      packDlg.classList.add('hidden');
+      if (!packAbort) alert('Pack failed: ' + e.message);
+    }
+  }
+
+  function packCancelClicked() {
+    if (packStart.classList.contains('hidden')) packAbort = true;  // packing in progress
+    else packDlg.classList.add('hidden');  // confirm state: just close
+  }
+
+  // ---- Nested archive preview (inside an ISO) ----
+
+  // Detect an archive by extension
+  function isArchiveName(name) {
+    const i = name.lastIndexOf('.');
+    if (i <= 0) return null;
+    const ext = name.slice(i + 1).toLowerCase();
+    if (['zip'].includes(ext)) return 'zip';
+    if (['iso', 'bin', 'mdf'].includes(ext)) return 'iso';
+    return null;
+  }
+
+  // Decompress a file inside a nested ZIP (bytes come from `read`)
+  async function readInnerZipFile(read, entry) {
+    if (!entry.compressedSize) return new Uint8Array(0);
+    const local = await read(entry.offset, 30);
+    const nameLen = local[26] | (local[27] << 8);
+    const extraLen = local[28] | (local[29] << 8);
+    const dataStart = entry.offset + 30 + nameLen + extraLen;
+    const compressed = await read(dataStart, entry.compressedSize);
+    if (entry.method === 0) return compressed;
+    if (entry.method === 8) {
+      const ds = new DecompressionStream('deflate-raw');
+      const stream = new Blob([compressed]).stream().pipeThrough(ds);
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+    throw new Error('Unsupported ZIP method ' + entry.method);
+  }
+
+  // Parse a nested ZIP, calling onNode(node) per entry (progressive) and storing
+  // the complete file map on container (ready before the render loop finishes)
+  async function parseInnerZip(read, size, onNode, container) {
+    const tailLen = Math.min(size, 22 + 65535);
+    const tail = await read(size - tailLen, tailLen);
+    let off = -1;
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail[i] === 0x50 && tail[i + 1] === 0x4B && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) { off = i; break; }
+    }
+    if (off < 0) throw new Error('ZIP EOCD not found');
+    const cdSize = u32(tail, off + 12);
+    const cdOffset = u32(tail, off + 16);
+    const cd = await read(cdOffset, cdSize);
+    const nodes = buildZipNodes(parseZipEntries(cd));
+    container.files = {};
+    for (const n of nodes) {
+      if (!n.isDir) container.files[n.path.slice(1).toLowerCase()] = { offset: n.offset, compressedSize: n.compressedSize, method: n.method, inner: { containerLba: container.lba } };
+    }
+    for (const n of nodes) {
+      if (!n.isDir) n.readFile = () => readInnerZipFile(read, n);
+      onNode(n);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  // Read a file inside a nested ISO (by logical sector)
+  function readInnerIsoFile(read, entry, sectorSize, dataOffset) {
+    if (sectorSize === 2048) return read(entry.lba * 2048, entry.size);
+    const n = Math.ceil(entry.size / 2048);
+    return read(entry.lba * sectorSize, n * sectorSize).then(raw => {
+      const out = new Uint8Array(n * 2048);
+      for (let i = 0; i < n; i++) out.set(raw.subarray(i * sectorSize + dataOffset, i * sectorSize + dataOffset + 2048), i * 2048);
+      return out.subarray(0, entry.size);
+    });
+  }
+
+  // Parse a nested ISO, calling onNode(node) per entry (progressive) and filling
+  // container.sectorSize/dataOffset/isJoliet before the walk
+  async function parseInnerIso(read, size, onNode, container, onDirRead) {
+    const probe = await read(0, Math.min(size, 65536));
+    const sig = (off) => off + 5 < probe.length && ascii(probe.subarray(off, off + 5)) === 'CD001';
+    let sectorSize = 2048, dataOffset = 0;
+    if (sig(16 * 2048 + 1)) { sectorSize = 2048; dataOffset = 0; }
+    else if (sig(16 * 2352 + 16 + 1)) { sectorSize = 2352; dataOffset = 16; }
+    else throw new Error('ISO PVD not found');
+    container.sectorSize = sectorSize;
+    container.dataOffset = dataOffset;
+    const readIso = async (lba, len) => {
+      if (sectorSize === 2048) return read(lba * 2048, len);
+      const n = Math.ceil(len / 2048);
+      const raw = await read(lba * sectorSize, n * sectorSize);
+      const out = new Uint8Array(n * 2048);
+      for (let i = 0; i < n; i++) out.set(raw.subarray(i * sectorSize + dataOffset, i * sectorSize + dataOffset + 2048), i * 2048);
+      return out.subarray(0, len);
+    };
+    // Read volume descriptors to find the PVD and Joliet SVD (for long names)
+    const block = await readIso(16, 32768);
+    let pvd = null, svd = null;
+    for (let i = 0; i + 2048 <= block.length; i += 2048) {
+      const desc = block.subarray(i, i + 2048);
+      const type = desc[0];
+      if (type === 0xFF) break;
+      if (ascii(desc.subarray(1, 6)) !== 'CD001') break;
+      if (type === 1) pvd = desc;
+      else if (type === 2 && desc[88] === 0x25 && desc[89] === 0x2f) svd = desc;
+      if (pvd && svd) break;
+    }
+    if (!pvd) throw new Error('ISO PVD not found');
+    const isJoliet = !!svd;
+    container.isJoliet = isJoliet;
+    const rootDesc = svd || pvd;
+    const rootLba = u32(rootDesc, 156 + 2);
+    const rootSize = u32(rootDesc, 156 + 10);
+    container.vol = (isJoliet ? decodeUCS2(rootDesc.subarray(40, 72)) : ascii(rootDesc.subarray(40, 72))).trim();
+    const useRR = !isJoliet;
+    const queue = [{ lba: rootLba, size: rootSize, path: '', depth: 0 }];
+    while (queue.length > 0) {
+      const d = queue.shift();
+      const data = await readIso(d.lba, d.size);
+      const entries = parseDirEntries(data, isJoliet, useRR);
+      let subdirs = 0;
+      for (const e of entries) {
+        const path = d.path === '' ? '/' + e.name : d.path + '/' + e.name;
+        const child = { name: e.name, path, isDir: e.isDir, size: e.size, date: e.date, depth: d.depth, lba: e.lba };
+        if (!child.isDir) child.readFile = () => readInnerIsoFile(read, child, sectorSize, dataOffset);
+        onNode(child);
+        if (child.isDir) { subdirs++; queue.push({ lba: e.lba, size: e.size, path, depth: d.depth + 1 }); }
+      }
+      if (onDirRead) onDirRead(d.path, subdirs);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  // Parse a ZIP archive: read the central directory, build the tree, and render it
+  async function parseZip(url, gen) {
+    const { cdOffset, cdSize } = await readZipEOCD(url);
+    if (gen !== parseGen) return;
+    const cd = await readRange(url, cdOffset, cdSize);
+    if (gen !== parseGen) return;
+    const nodes = buildZipNodes(parseZipEntries(cd));
+
+    // Complete file map, ready immediately (the progressive render below lags behind)
+    zipFiles = {};
+    for (const n of nodes) {
+      if (!n.isDir) zipFiles[n.path.slice(1).toLowerCase()] = { offset: n.offset, compressedSize: n.compressedSize, method: n.method };
+    }
+
+    let dirCount = 0, fileCount = 0, totalBytes = 0;
+    for (const n of nodes) {
+      if (gen !== parseGen) return;
+      allNodes.push(n);
+      appendTreeNode(n, n.depth, childBoxes, treeRoot);
+      appendFlatProgressive(n, flatList, lastChild);
+      nodeByPath.set(n.path, n);
+      if (n.isDir) { dirSize.set(n.path, 0); dirCount++; }
+      else { onFileAdded(n, dirSize, nodeByPath); fileCount++; totalBytes += n.size; }
+      mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, null, true);
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    const ordered = [];
+    (function walk(container) {
+      for (const el of container.children) {
+        const node = el._node;
+        if (!node) continue;
+        ordered.push(node);
+        const box = node.isDir ? childBoxes.get(node.path) : null;
+        if (box) walk(box);
+      }
+    })(treeRoot);
+    allNodes = ordered;
+    await applyFileDescriptions();
+
+    mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, null);
+  }
+
+  // Fetch the whole file into memory and download via a Blob URL
+  async function blobDownload(node) {
+    try {
+      mainStatusEl.textContent = 'Downloading ' + node.name + '...';
+      const data = await readFileContent(node);
+      const blob = new Blob([data], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = node.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      mainStatusEl.textContent = '';
+    } catch (e) {
+      mainStatusEl.textContent = '';
+      alert('Download failed: ' + e.message);
+    }
+  }
+
+  async function downloadFile(node) {
+    await blobDownload(node);
+  }
+
+  // Intercept plain left-click to download via Range; keep href for other clicks / copy-link
+  function attachDownload(link, node) {
+    link.addEventListener('click', (e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      downloadFile(node);
+    });
+  }
+
+  // File types the browser can display natively (image / video / audio)
+  function previewType(name) {
+    const i = name.lastIndexOf('.');
+    if (i <= 0 || i === name.length - 1) return null;
+    const ext = name.slice(i + 1).toLowerCase();
+    if (['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif'].includes(ext)) return 'image';
+    if (['mp4','webm','ogv','mov','m4v','mkv'].includes(ext)) return 'video';
+    if (['mp3','wav','ogg','flac','m4a','aac','opus'].includes(ext)) return 'audio';
+    if (['html','htm','xhtml'].includes(ext)) return 'html';
+    if (['pdf'].includes(ext)) return 'pdf';
+    if (['txt','inf','ini','cfg','conf','log','bbs','diz','nfo','md','xml','xsl','xslt','json','yml','yaml','toml','csv','tsv','css','js','jsx','ts','tsx','bat','cmd','sh','ps1','py','rb','pl','php','c','h','cpp','hpp','cs','java','go','rs','sql','diff','patch','map'].includes(ext)) return 'text';
+    if (['mht','mhtml'].includes(ext)) return 'mht';
+    if (['zip','iso','bin','mdf'].includes(ext)) return 'archive';
+    return null;
+  }
+
+  // Emoji for a file, based on its preview category
+  function fileIcon(name) {
+    const t = previewType(name);
+    if (t === 'image') return '🖼️';
+    if (t === 'video') return '🎬';
+    if (t === 'audio') return '🎵';
+    if (t === 'html' || t === 'mht') return '🌐';
+    if (t === 'archive') return '📦';
+    if (t === 'text') return '📝';
+    if (t === 'pdf') return '📑';
+    return '📄';
+  }
+
+  // Toggle the "still loading contents" spinner on a directory row (tree + flat)
+  function setDirLoading(node, on) {
+    if (node.treeNameEl) node.treeNameEl.classList.toggle('loading', on);
+    if (node.flatNameEl) node.flatNameEl.classList.toggle('loading', on);
+    if (node.treePackEl) node.treePackEl.classList.toggle('hidden', on);
+    if (node.flatPackEl) node.flatPackEl.classList.toggle('hidden', on);
+  }
+
+  // A directory is "fully loaded" once its own entries are read AND every
+  // descendant directory has also completed (post-order).
+  function completeDir(pending, lookup, path) {
+    const dn = lookup(path);
+    if (dn) setDirLoading(dn, false);
+    if (path === '') return;
+    const parent = parentPathOf(path);
+    const left = (pending.get(parent) || 0) - 1;
+    pending.set(parent, left);
+    if (left === 0) completeDir(pending, lookup, parent);
+  }
+
+  let navStack = [];            // left-pane nested-archive overlays
+  let currentPreview = null;    // right-pane preview cleanup holder { _url, _sessionId }
+  let previewGen = 0;           // generation counter: latest preview wins
+  let paneWidthPx = null;       // user-dragged preview pane width (px), null = default 45vw
+
+  function closeNav(overlay) {
+    const idx = navStack.indexOf(overlay);
+    if (idx === -1) return;
+    navStack.splice(idx, 1);
+    overlay.remove();
+  }
+
+  function closePreview() {
+    previewGen++;
+    if (currentPreview) {
+      if (currentPreview._url) URL.revokeObjectURL(currentPreview._url);
+      if (currentPreview._sessionId && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'clear-session', sessionId: currentPreview._sessionId });
+      }
+      currentPreview = null;
+    }
+    const pane = document.getElementById('preview-pane');
+    pane.classList.remove('open');
+    pane.classList.add('hidden');
+    pane.innerHTML = '';
+  }
+
+  // Serve HTML preview via the Service Worker (loads CSS/images/JS from the archive)
+  async function previewHtmlWithSw(iframe, node, htmlText, ov) {
+    if ('serviceWorker' in navigator && !navigator.serviceWorker.controller) {
+      await waitForController();
+    }
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+      iframe.srcdoc = htmlText;  // SW not ready: fall back to plain srcdoc
+      return;
+    }
+    try {
+      const sessionId = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const entry = node.path.slice(1);
+      const files = {};
+      const dirs = {};
+      if (archiveType === 'zip') {
+        if (zipFiles) Object.assign(files, zipFiles);
+      } else {
+        dirs[''] = { lba: rootLba, size: rootSize };
+        for (const n of allNodes) {
+          const key = n.path.slice(1).toLowerCase();
+          if (n.isDir) dirs[key] = { lba: n.lba, size: n.size };
+          else files[key] = { lba: n.lba, size: n.size };
+        }
+      }
+      await new Promise(resolve => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resolve();
+        navigator.serviceWorker.controller.postMessage({
+          type: 'set-session', sessionId,
+          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText }
+        }, [channel.port2]);
+      });
+      // Load the HTML at its real archive-relative path so the browser resolves
+      // relative refs (including ../) against it natively; the SW serves it from
+      // the session. Scripts are disabled by the CSP the SW injects; the sandbox
+      // stays to block top-navigation (target="_top"/"_parent") from escaping.
+      iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-downloads allow-top-navigation');
+      iframe.src = '_iso/' + sessionId + '/' + entry.split('/').map(encodeURIComponent).join('/');
+      ov._sessionId = sessionId;
+    } catch (e) {
+      iframe.srcdoc = htmlText;
+    }
+  }
+
+  // Apply fit (contain) or 1:1 (natural size) to an image/video element
+  function applyMediaFit(el, fit) {
+    if (fit) {
+      el.style.width = '100%';
+      el.style.height = '100%';
+      el.style.objectFit = 'contain';
+    } else {
+      el.style.width = 'auto';
+      el.style.height = 'auto';
+      el.style.objectFit = 'fill';
+    }
+  }
+
+  // Image viewer: fit/1:1 toggle + mouse-wheel zoom + drag-to-pan
+  function setupImageViewer(img, content, toggleBtn) {
+    let zoom = 1, x = 0, y = 0, fit = true;
+
+    function apply() {
+      applyMediaFit(img, fit);
+      img.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + zoom + ')';
+    }
+
+    apply();  // set initial fit state
+
+    content.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      zoom = Math.min(12, Math.max(0.05, zoom * factor));
+      apply();
+    }, { passive: false });
+
+    img.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      img.classList.add('dragging');
+      const startX = e.clientX, startY = e.clientY;
+      const origX = x, origY = y;
+      const onMove = (ev) => {
+        x = origX + (ev.clientX - startX);
+        y = origY + (ev.clientY - startY);
+        apply();
+      };
+      const onUp = () => {
+        img.classList.remove('dragging');
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
+    img.addEventListener('dblclick', () => {
+      fit = true; zoom = 1; x = 0; y = 0;
+      toggleBtn.textContent = '1:1';
+      apply();
+    });
+
+    toggleBtn.addEventListener('click', () => {
+      fit = !fit;
+      zoom = 1; x = 0; y = 0;
+      toggleBtn.textContent = fit ? '1:1' : 'Fit';
+      apply();
+    });
+  }
+
+  // Inline modal preview: fetch clean bytes via Range, then show via a Blob URL
+  function openPreview(node, pt) {
+    if (pt === 'archive') openArchive(node);
+    else showFilePreview(node, pt);
+  }
+
+  // Drill into a nested archive: overlay its file list on the left pane, keeping
+  // the underlying list intact (closing reveals it again).
+  function openArchive(node) {
+    const left = document.getElementById('left');
+    const overlay = document.createElement('div');
+    overlay.className = 'nav-overlay';
+    overlay.innerHTML = '<div class="nav-head"><span class="nav-title"><a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener">' + esc(node.name) + '</a></span>'
+      + '<span class="nav-status"></span>'
+      + '<button class="nav-mode-tree active" title="Tree">Tree</button>'
+      + '<button class="nav-mode-flat" title="List">List</button>'
+      + '<input class="nav-filter" type="text" placeholder="Filter by name...">'
+      + '<span class="nav-close" title="Close">×</span></div>'
+      + '<div class="nav-list"></div>';
+    left.appendChild(overlay);
+    overlay.querySelector('.nav-close').addEventListener('click', () => closeNav(overlay));
+    attachDownload(overlay.querySelector('.nav-title a'), node);
+    navStack.push(overlay);
+
+    const scroll = overlay.querySelector('.nav-list');
+    const tv = makeView(); tv.view.classList.add('grid-table', 'tree-view');
+    const fv = makeView(); fv.view.classList.add('grid-table', 'flat-view', 'hidden');
+    const filterView = makeView(); filterView.view.classList.add('grid-table', 'flat-view', 'hidden');
+    scroll.append(tv.view, fv.view, filterView.view);
+    const treeList = tv.list;
+    const flatList = fv.list;
+    const filterList = filterView.list;
+
+    const btnTree = overlay.querySelector('.nav-mode-tree');
+    const btnFlat = overlay.querySelector('.nav-mode-flat');
+    const filterEl = overlay.querySelector('.nav-filter');
+    let mode = 'tree';
+    const showView = (name) => {
+      tv.view.classList.toggle('hidden', name !== 'tree');
+      fv.view.classList.toggle('hidden', name !== 'flat');
+      filterView.view.classList.toggle('hidden', name !== 'filter');
+    };
+    const setMode = (isTree) => {
+      mode = isTree ? 'tree' : 'flat';
+      showView(mode);
+      btnTree.classList.toggle('active', isTree);
+      btnFlat.classList.toggle('active', !isTree);
+    };
+    const applyFilter = () => {
+      const kw = filterEl.value.trim().toLowerCase();
+      if (!kw) { setMode(mode === 'tree'); return; }
+      filterList.innerHTML = '';
+      for (const n of innerNodes) {
+        if (n.path.toLowerCase().includes(kw)) appendFlatRowTo(filterList, n);
+      }
+      showView('filter');
+    };
+    btnTree.addEventListener('click', () => { filterEl.value = ''; setMode(true); });
+    btnFlat.addEventListener('click', () => { filterEl.value = ''; setMode(false); });
+    filterEl.addEventListener('input', applyFilter);
+
+    const read = (offset, length) => readFileBytes(currentUrl, node.lba, offset, length);
+    const fmt = isArchiveName(node.name);
+    const container = { lba: node.lba, size: node.size, type: fmt, sectorSize: 2048, dataOffset: 0, isJoliet: false };
+    const innerNodes = [];
+    const pathMap = new Map();
+    const boxMap = new Map([['', treeList]]);
+    const sizeMap = new Map();
+    const flatLast = new Map();
+    const statusEl = overlay.querySelector('.nav-status');
+    let fileCount = 0, dirCount = 0, totalBytes = 0, loading = true;
+    const updateStatus = () => {
+      statusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, container.vol, loading);
+    };
+    updateStatus();
+    const onNode = (n) => {
+      if (isArchiveName(n.name)) n._noBrowse = true;
+      n.innerContainer = container;
+      n.archivePath = node.path;
+      innerNodes.push(n);
+      n.archiveNodes = innerNodes;
+      pathMap.set(n.path, n);
+      appendTreeNode(n, n.depth, boxMap, treeList);
+      appendFlatProgressive(n, flatList, flatLast);
+      if (n.isDir) { sizeMap.set(n.path, 0); dirCount++; if (container.type === 'iso') setDirLoading(n, true); }
+      else { fileCount++; totalBytes += n.size; onFileAdded(n, sizeMap, pathMap); }
+      updateStatus();
+    };
+    const pending = new Map();
+    const onDirRead = (path, subdirs) => {
+      pending.set(path, subdirs);
+      if (subdirs === 0) completeDir(pending, (p) => pathMap.get(p), path);
+    };
+    (async () => {
+      try {
+        if (fmt === 'zip') await parseInnerZip(read, node.size, onNode, container);
+        else await parseInnerIso(read, node.size, onNode, container, onDirRead);
+        loading = false;
+        updateStatus();
+      } catch (e) {
+        treeList.textContent = 'Failed to read archive: ' + e.message;
+      }
+    })();
+  }
+
+  // Show a file's preview in the right pane.
+  function showFilePreview(node, type) {
+    closePreview();
+    const gen = previewGen;
+    const pane = document.getElementById('preview-pane');
+    const ov = { _url: null, _sessionId: null, _statusEl: null };
+    currentPreview = ov;
+    pane.innerHTML = '<div class="preview-head">'
+      + '<span class="preview-title"><a href="' + esc(fileLink(node.archivePath ? node.archivePath + node.path : node.path)) + '" target="_blank" rel="noopener">' + esc(node.name) + '</a></span>'
+      + '<span class="preview-status"></span>'
+      + '<button class="preview-1to1" title="Toggle 1:1">1:1</button>'
+      + '<span class="preview-close" title="Close">×</span>'
+      + '</div>'
+      + '<div class="preview-content">Loading...</div>';
+    pane.classList.remove('hidden');
+    pane.classList.add('open');
+    if (paneWidthPx !== null) pane.style.flexBasis = paneWidthPx + 'px';
+    pane.querySelector('.preview-close').addEventListener('click', closePreview);
+    attachDownload(pane.querySelector('.preview-title a'), node);
+
+    const content = pane.querySelector('.preview-content');
+    const toggleBtn = pane.querySelector('.preview-1to1');
+    const head = pane.querySelector('.preview-head');
+    ov._statusEl = pane.querySelector('.preview-status');
+    (async () => {
+      try {
+        const data = await readFileContent(node);
+        if (gen !== previewGen) return;
+        content.innerHTML = '';
+
+        if (type === 'text') {
+          const text = decodeText(data);
+          const pre = document.createElement('pre');
+          pre.textContent = text;
+          content.appendChild(pre);
+          toggleBtn.style.display = 'none';
+          let fs = 13;
+          const applyFs = () => { pre.style.fontSize = fs + 'px'; };
+          applyFs();
+          const zoomBox = document.createElement('div');
+          zoomBox.className = 'preview-zoom';
+          zoomBox.innerHTML = '<button class="zoom-out" title="Smaller">A−</button><button class="zoom-in" title="Larger">A+</button>';
+          head.insertBefore(zoomBox, head.querySelector('.preview-close'));
+          zoomBox.querySelector('.zoom-out').addEventListener('click', () => { fs = Math.max(8, fs - 2); applyFs(); });
+          zoomBox.querySelector('.zoom-in').addEventListener('click', () => { fs = Math.min(48, fs + 2); applyFs(); });
+          return;
+        }
+
+        if (type === 'mht') {
+          const parsed = parseMht(data);
+          const iframe = document.createElement('iframe');
+          iframe.setAttribute('sandbox', '');
+          iframe.srcdoc = parsed;
+          content.appendChild(iframe);
+          toggleBtn.style.display = 'none';
+          return;
+        }
+
+        if (type === 'html') {
+          const htmlText = decodeText(data);
+          const iframe = document.createElement('iframe');
+          iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-downloads allow-top-navigation');
+          content.appendChild(iframe);
+          const pre = document.createElement('pre');
+          pre.textContent = htmlText;
+          let showingSource = false;
+          toggleBtn.textContent = 'Source';
+          toggleBtn.title = 'View source';
+          toggleBtn.addEventListener('click', () => {
+            showingSource = !showingSource;
+            if (showingSource) {
+              iframe.remove();
+              content.appendChild(pre);
+              toggleBtn.textContent = 'View';
+              toggleBtn.title = 'View rendered';
+            } else {
+              pre.remove();
+              content.appendChild(iframe);
+              toggleBtn.textContent = 'Source';
+              toggleBtn.title = 'View source';
+            }
+          });
+          if (node.readFile) previewInnerHtmlWithSw(iframe, node, htmlText, ov);
+          else previewHtmlWithSw(iframe, node, htmlText, ov);
+          return;
+        }
+
+        const url = URL.createObjectURL(new Blob([data], type === 'pdf' ? { type: 'application/pdf' } : undefined));
+        ov._url = url;
+        let el;
+        if (type === 'image') { el = document.createElement('img'); el.draggable = false; }
+        else if (type === 'video') { el = document.createElement('video'); el.controls = true; }
+        else if (type === 'pdf') { el = document.createElement('iframe'); }
+        else { el = document.createElement('audio'); el.controls = true; }
+        el.src = url;
+        content.appendChild(el);
+        if (type === 'image') {
+          setupImageViewer(el, content, toggleBtn);
+        } else if (type === 'video') {
+          let vFit = true;
+          applyMediaFit(el, true);
+          toggleBtn.addEventListener('click', () => {
+            vFit = !vFit;
+            applyMediaFit(el, vFit);
+            toggleBtn.textContent = vFit ? '1:1' : 'Fit';
+          });
+        } else {
+          toggleBtn.style.display = 'none';
+        }
+      } catch (err) {
+        if (gen !== previewGen) return;
+        content.textContent = 'Failed to load preview: ' + err.message;
+      }
+    })();
+  }
+
+  // Tree: mount the node into its parent's children container (parent is always loaded before child in BFS)
+  function appendTreeNode(node, depth, childBoxes, treeRoot) {
+    const nodeEl = document.createElement('div');
+    nodeEl.className = 'tree-node';
+    const row = document.createElement('div');
+    row.className = depth % 2 ? 'tree-row depth-odd' : 'tree-row';
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.style.setProperty('--level', depth);
+    if (node.isDir) {
+      const span = document.createElement('span');
+      span.className = 'dir';
+      span.innerHTML = '📁 <span class="node-name">' + esc(node.name) + '</span>';
+      span.title = node.name;
+      span.addEventListener('click', () => toggleDir(node));
+      name.appendChild(span);
+      node.dirSpan = span;
+      node.treeNameEl = name;
+      const pack = document.createElement('span');
+      pack.className = 'preview-icon';
+      pack.title = 'Pack & download';
+      pack.textContent = '📦';
+      pack.addEventListener('click', () => packDir(node));
+      name.appendChild(pack);
+      node.treePackEl = pack;
+    } else {
+      const pt = previewType(node.name);
+      name.innerHTML = '<span class="tree-main"><span class="file">' + fileIcon(node.name) + ' <a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener" title="' + esc(node.name) + '">' + esc(node.name) + '</a></span></span>'
+        + (pt && !(pt === 'archive' && node._noBrowse) ? '<span class="preview-icon" title="' + (pt === 'archive' ? 'Browse' : 'Preview') + '">' + (pt === 'archive' ? '🔍' : '👁') + '</span>' : '');
+      node.treeNameSpan = name;
+      attachDownload(name.querySelector('a'), node);
+      if (pt) name.querySelector('.preview-icon').addEventListener('click', () => openPreview(node, pt));
+      setDescSpan(name, node);
+    }
+    const date = document.createElement('span');
+    date.className = 'tree-date';
+    date.textContent = node.date || '';
+    const size = document.createElement('span');
+    size.className = 'tree-size';
+    size.textContent = node.isDir ? '' : fmtSize(node.size);
+    node.treeSizeEl = size;
+    row.append(name, size, date);
+    nodeEl.appendChild(row);
+    if (node.isDir) {
+      const box = document.createElement('div');
+      box.className = 'tree-children hidden';
+      nodeEl.appendChild(box);
+      childBoxes.set(node.path, box);
+      node._childrenBox = box;
+    }
+    const parentBox = childBoxes.get(parentPathOf(node.path)) || treeRoot;
+    parentBox.appendChild(nodeEl);
+    nodeEl._node = node;
+  }
+
+  // Flat/filter shared: build a full-path row
+  function makeFlatRow(node) {
+    const row = document.createElement('div');
+    row.className = 'tree-row';
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    if (node.isDir) {
+      name.innerHTML = '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span><span class="preview-icon" title="Pack & download">📦</span>';
+      node.flatNameEl = name;
+      name.querySelector('.preview-icon').addEventListener('click', () => packDir(node));
+      node.flatPackEl = name.querySelector('.preview-icon');
+    } else {
+      const pt = previewType(node.name);
+      name.innerHTML = '<span class="tree-main">' + fileIcon(node.name) + ' <a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener" title="' + esc(node.path) + '">' + esc(node.path) + '</a></span>'
+        + (pt && !(pt === 'archive' && node._noBrowse) ? '<span class="preview-icon" title="' + (pt === 'archive' ? 'Browse' : 'Preview') + '">' + (pt === 'archive' ? '🔍' : '👁') + '</span>' : '');
+      node.flatNameSpan = name;
+      attachDownload(name.querySelector('a'), node);
+      if (pt) name.querySelector('.preview-icon').addEventListener('click', () => openPreview(node, pt));
+      setDescSpan(name, node);
+    }
+    const size = document.createElement('span');
+    size.className = 'tree-size';
+    size.textContent = node.isDir ? '' : fmtSize(node.size);
+    node.flatSizeEl = size;
+    const date = document.createElement('span');
+    date.className = 'tree-date';
+    date.textContent = node.date || '';
+    row.append(name, size, date);
+    return row;
+  }
+
+  function appendFlatRowTo(container, node) {
+    container.appendChild(makeFlatRow(node));
+  }
+
+  // Flat progressive insert: Map<dir path, row>; insert new children after that row to keep DFS order
+  function appendFlatProgressive(node, flatList, lastChild) {
+    const row = makeFlatRow(node);
+    const parent = parentPathOf(node.path);
+    const anchor = lastChild.get(parent);
+    if (anchor) anchor.after(row);
+    else flatList.prepend(row);            // only the first root-level child
+    lastChild.set(parent, row);
+    if (node.isDir) lastChild.set(node.path, row);  // the directory itself anchors its children
+  }
+
+  function showView(name) {
+    treeView.classList.toggle('hidden', name !== 'tree');
+    flatView.classList.toggle('hidden', name !== 'flat');
+    if (filterView) filterView.classList.toggle('hidden', name !== 'filter');
+  }
+
+  function applyMode() {
+    showView(mode === 'tree' ? 'tree' : 'flat');
+  }
+
+  function applyFilter() {
+    const kw = filterEl.value.trim().toLowerCase();
+    if (!kw) { applyMode(); return; }
+    if (!filterView) {
+      const fv = makeView();
+      filterView = fv.view; filterList = fv.list;
+      filterView.classList.add('grid-table', 'flat-view');
+      resultEl.appendChild(filterView);
+    }
+    filterList.innerHTML = '';
+    for (const n of allNodes) {
+      if (n.path.toLowerCase().includes(kw)) appendFlatRowTo(filterList, n);
+    }
+    showView('filter');
+  }
+
+  async function parse(file, handle) {
+    currentFile = file || null;
+    currentHandle = handle || null;
+    const url = file ? file.name : urlEl.value.trim();
+    if (!url) {
+      mainStatusEl.textContent = 'Please paste an ISO/BIN/MDF link first.';
+      return;
+    }
+    const gen = ++parseGen;   // the latest parse wins
+    currentUrl = file ? 'file:///' + file.name : url;
+    try {
+      if (currentFile) localStorage.removeItem('isobrowser:url');
+      else localStorage.setItem('isobrowser:url', url);
+    } catch (e) {}
+    hideUrlDialog();
+    urlLink.href = currentUrl;
+    urlLink.textContent = fileNameFromUrl(url);
+    document.title = fileNameFromUrl(url) + ' - ISOBrowser';
+    mainStatusEl.textContent = 'Reading...';
+    resultEl.innerHTML = '';
+    const tv = makeView(), fv = makeView();
+    treeView = tv.view; treeRoot = tv.list;
+    flatView = fv.view; flatList = fv.list;
+    treeView.classList.add('grid-table', 'tree-view');
+    flatView.classList.add('grid-table', 'flat-view');
+    filterView = null; filterList = null;
+    resultEl.append(treeView, flatView);
+    applyMode();
+    childBoxes = new Map([['', treeRoot]]);
+    lastChild = new Map();
+    allNodes = [];
+    dirSize = new Map();
+    nodeByPath = new Map();
+
+    let dirCount = 0, fileCount = 0, totalBytes = 0;
+    try {
+      const fmt = await detectFormat(url);
+      if (gen !== parseGen) return;
+      if (!fmt) {
+        throw new Error('Unrecognized archive format (ISO 9660 or ZIP expected)');
+      }
+      if (fmt.type === 'zip') {
+        archiveType = 'zip';
+        await parseZip(url, gen);
+        return;
+      }
+      archiveType = 'iso';
+      sectorSize = fmt.sectorSize;
+      dataOffset = fmt.dataOffset;
+      const { pvd, svd } = await readVolumeDescriptors(url);
+      if (gen !== parseGen) return;
+      if (!pvd) {
+        throw new Error('Not an ISO 9660 filesystem (primary volume descriptor "CD001" not found)');
+      }
+      isJoliet = !!svd;
+      const rootDesc = svd || pvd;
+      const vol = isJoliet ? decodeUCS2(rootDesc.subarray(40, 72)).trim() : ascii(rootDesc.subarray(40, 72)).trim();
+      rootLba = u32(rootDesc, 156 + 2);
+      rootSize = u32(rootDesc, 156 + 10);
+      const useRR = !isJoliet; // Joliet names are already long enough; otherwise fall back to Rock Ridge
+
+      // Breadth-first read; display is mounted into parent/child nesting by appendTreeNode
+      const queue = [{ lba: rootLba, size: rootSize, path: '', depth: 0 }];
+      const pending = new Map();
+      const lookup = (p) => nodeByPath.get(p);
+      while (queue.length > 0) {
+        if (gen !== parseGen) return;   // don't send a new request
+        const node = queue.shift();
+        const data = await readData(url, node.lba, node.size);
+        if (gen !== parseGen) return;   // finish the current request, then stop
+        const entries = parseDirEntries(data, isJoliet, useRR);
+        let subdirs = 0;
+        for (const e of entries) {
+          const path = node.path === '' ? '/' + e.name : node.path + '/' + e.name;
+          const child = { name: e.name, path, isDir: e.isDir, lba: e.lba, size: e.size, date: e.date, depth: node.depth };
+          allNodes.push(child);
+          appendTreeNode(child, child.depth, childBoxes, treeRoot);
+          appendFlatProgressive(child, flatList, lastChild);
+          nodeByPath.set(child.path, child);
+          if (child.isDir) { dirSize.set(child.path, 0); dirCount++; subdirs++; setDirLoading(child, true); queue.push({ lba: e.lba, size: e.size, path, depth: node.depth + 1 }); }
+          else { onFileAdded(child, dirSize, nodeByPath); fileCount++; totalBytes += child.size; }
+        }
+        pending.set(node.path, subdirs);
+        if (subdirs === 0) completeDir(pending, lookup, node.path);
+        mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol, true);
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      // Reorder allNodes into depth-first order for filtering (flat list is already inserted progressively)
+      const ordered = [];
+      (function walk(container) {
+        for (const el of container.children) {
+          const node = el._node;
+          if (!node) continue;
+          ordered.push(node);
+          const box = node.isDir ? childBoxes.get(node.path) : null;
+          if (box) walk(box);
+        }
+      })(treeRoot);
+      allNodes = ordered;
+      await applyFileDescriptions();
+
+      mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol);
+    } catch (e) {
+      if (gen !== parseGen) return;  // superseded by a new parse
+      mainStatusEl.textContent = '';
+      resultEl.innerHTML = '<div style="color:#c00">Parse failed: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  modeTree.addEventListener('click', () => {
+    mode = 'tree';
+    modeTree.classList.add('active');
+    modeFlat.classList.remove('active');
+    filterEl.value = '';
+    applyMode();
+  });
+  modeFlat.addEventListener('click', () => {
+    mode = 'flat';
+    modeFlat.classList.add('active');
+    modeTree.classList.remove('active');
+    filterEl.value = '';
+    applyMode();
+  });
+  filterEl.addEventListener('input', applyFilter);
+  parseBtn.addEventListener('click', () => parse());
+  pasteBtn.addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) urlEl.value = text.trim();
+    } catch (e) {}
+  });
+  urlEl.addEventListener('keydown', e => { if (e.key === 'Enter') parse(); });
+  openDlg.addEventListener('click', showUrlDialog);
+  openFile.addEventListener('click', async () => {
+    if (window.showOpenFilePicker) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'Archives', accept: { 'application/octet-stream': ['.iso', '.bin', '.mdf', '.zip'] } }]
+        });
+        parse(await handle.getFile(), handle);
+      } catch (e) {}
+    } else {
+      fileInput.click();
+    }
+  });
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    parse(file);
+  });
+  urlDlg.querySelector('.modal-close').addEventListener('click', hideUrlDialog);
+  urlDlg.addEventListener('click', (e) => { if (e.target === urlDlg) hideUrlDialog(); });
+  packStart.addEventListener('click', packRun);
+  packCancel.addEventListener('click', packCancelClicked);
+  packClose.addEventListener('click', packCancelClicked);
+  packDlg.addEventListener('click', (e) => { if (e.target === packDlg) packCancelClicked(); });
+  showUrlDialog();
+
+  // Surface SW-intercepted requests in this page's console
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'log') {
+        console.log('[ISOBrowser SW]', e.data.method, e.data.url);
+        try {
+          const u = new URL(e.data.url);
+          const idx = u.pathname.indexOf('/_iso/');
+          if (idx !== -1) {
+            const rest = u.pathname.slice(idx + 6);
+            const slash = rest.indexOf('/');
+            const sessionId = slash === -1 ? rest : rest.slice(0, slash);
+            const path = slash === -1 ? '' : decodeURIComponent(rest.slice(slash + 1));
+            if (currentPreview && currentPreview._sessionId === sessionId && currentPreview._statusEl) {
+              currentPreview._statusEl.textContent = 'Load ' + path;
+            }
+          }
+        } catch (err) {}
+      } else if (e.data && e.data.type === 'session-expired') {
+        alert('Preview session expired (the Service Worker was restarted and the local file cannot be persisted).\nPlease re-open the file.');
+      }
+    });
+    window.addEventListener('pagehide', () => {
+      if (currentPreview && currentPreview._sessionId && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'clear-session', sessionId: currentPreview._sessionId });
+      }
+    });
+  }
+
+  // Draggable divider between the file list and the preview pane
+  const dividerEl = document.getElementById('divider');
+  const paneEl = document.getElementById('preview-pane');
+  dividerEl.addEventListener('pointerdown', (e) => {
+    if (paneEl.classList.contains('hidden')) return;
+    e.preventDefault();
+    dividerEl.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startW = paneEl.getBoundingClientRect().width;
+    dividerEl.classList.add('dragging');
+    const onMove = (ev) => {
+      const w = Math.max(200, Math.min(window.innerWidth * 0.85, startW + (startX - ev.clientX)));
+      paneWidthPx = w;
+      paneEl.style.flexBasis = w + 'px';
+    };
+    const onUp = () => {
+      dividerEl.classList.remove('dragging');
+      dividerEl.removeEventListener('pointermove', onMove);
+      dividerEl.removeEventListener('pointerup', onUp);
+      dividerEl.removeEventListener('pointercancel', onUp);
+    };
+    dividerEl.addEventListener('pointermove', onMove);
+    dividerEl.addEventListener('pointerup', onUp);
+    dividerEl.addEventListener('pointercancel', onUp);
+  });
+
+  // Register the Service Worker for HTML preview (needs HTTPS or localhost)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>
