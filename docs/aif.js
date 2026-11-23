@@ -232,8 +232,8 @@
   // ---- main open ----
 
   // read(start, length) -> Promise<Uint8Array>
-  async function open(read) {
-    var headerBytes = await read(0, 147);
+  async function open(read, headerBytes) {
+    if (!headerBytes) headerBytes = await read(0, 147);
     var header = parseHeader(headerBytes);
 
     // Read the index header + entries in one request. The index is small (a few

@@ -227,6 +227,7 @@
   let hfsVol = null;                       // HFS: volume metadata (from HFS.detect)
   let hfsPromise = null;                   // HFS: lazy-load promise for hfs.js
   let aifReader = null;                    // AIF: container reader (from AIF.open); routes readData through it
+  let detectProbe = null;                  // 64 KiB probe from detectFormat; reused as the AIF header
   let aifPromise = null;                   // AIF: lazy-load promise for aif.js (+ lzma1.bundle.js)
   let udfVol = null;                       // UDF: volume metadata (from UDF.detect)
   let udfPromise = null;                   // UDF: lazy-load promise for udf.js
@@ -320,7 +321,11 @@
   // Detect archive format: ISO 9660 (2048/2352-byte sectors), ZIP, or Apple HFS
   async function detectFormat(url) {
     const probe = await readRange(url, 0, 65536);
+    detectProbe = probe;
     const sig = (off) => off + 5 < probe.length && ascii(probe.subarray(off, off + 5)) === 'CD001';
+    // AIF (Aaru Image Format) is detected from the probe; check it before the
+    // UDF anchor read so AIF files don't pay for that extra 8-byte request.
+    if (probe.length >= 8 && ascii(probe.subarray(0, 8)) === 'AARUFRMT') return { type: 'aif' };
     // UDF first: ISO/UDF bridge discs carry both an ISO PVD and a UDF anchor; prefer UDF for full names.
     try {
       const anchor = await readRange(url, 256 * 2048, 8);
@@ -330,7 +335,6 @@
     if (sig(16 * 2352 + 16 + 1)) return { type: 'iso', sectorSize: 2352, dataOffset: 16 };
     if (probe.length >= 2 && probe[0] === 0x50 && probe[1] === 0x4B) return { type: 'zip' };  // "PK"
     if (probe.length >= 514 && probe[512] === 0x50 && probe[513] === 0x4D) return { type: 'hfs' };  // "PM" Apple Partition Map
-    if (probe.length >= 8 && ascii(probe.subarray(0, 8)) === 'AARUFRMT') return { type: 'aif' };   // Aaru Image Format
     return null;
   }
 
@@ -2198,7 +2202,7 @@
       }
       if (fmt.type === 'aif') {
         await loadAif();
-        aifReader = await AIF.open((start, length) => readRange(url, start, length));
+        aifReader = await AIF.open((start, length) => readRange(url, start, length), detectProbe);
         if (gen !== parseGen) return;
 
         // Probe the filesystem inside the container.
