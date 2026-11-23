@@ -277,7 +277,63 @@
     }
 
     var sectorSize = header.biggestSectorSize || 2048;
-    var blockCache = new Map(); // blockOffset -> { bh, payload }
+    var blockStreams = new Map(); // blockOffset -> { sectorBytes, produced, slice, ensure }
+    var STREAM_CHUNK = 256 * 1024; // decompress in 256 KiB steps
+
+    // Open a lazy stream for one data block: decompress just enough for each
+    // requested sector, feeding compressed input in 256 KiB chunks. The stream
+    // stays alive so later sectors in the same block continue where it left off.
+    async function openBlockStream(blockOffset) {
+      var bhBytes = await read(blockOffset, 36);
+      var bh = parseBlockHeader(bhBytes);
+      if (bh.id !== BLOCK_TYPE.DataBlock) {
+        throw new Error('DDT entry points to non-data block at ' + blockOffset);
+      }
+      var sectorBytes = bh.sectorSize || sectorSize;
+
+      async function wholePayload() {
+        var payload = await codec.decompress(
+          bh.compression,
+          await read(blockOffset + 36, bh.cmpLength),
+          bh.length
+        );
+        return {
+          sectorBytes: sectorBytes,
+          produced: function () { return payload.length; },
+          slice: function (s, l) { return payload.subarray(s, s + l); },
+          ensure: async function () {}
+        };
+      }
+
+      var Lzma1 = (typeof globalThis !== 'undefined' ? globalThis : self).Lzma1;
+      if (bh.compression !== COMPRESSION.Lzma || !Lzma1 || !Lzma1.createRawLzma1Stream) {
+        return wholePayload();
+      }
+
+      var first = await read(blockOffset + 36, Math.min(STREAM_CHUNK, bh.cmpLength));
+      var p = first[0];
+      var lc = p % 9, lp = Math.floor((p - lc) / 9) % 5, pb = Math.floor((p - lc) / 9 / 5);
+      var dictSize = first[1] | (first[2] << 8) | (first[3] << 16) | (first[4] << 24);
+      var stream = Lzma1.createRawLzma1Stream({ lc: lc, lp: lp, pb: pb, dictSize: dictSize, uncompressedSize: bh.length });
+      if (!stream) return wholePayload();
+
+      stream.feed(first.subarray(5));
+      var consumed = first.length;
+
+      return {
+        sectorBytes: sectorBytes,
+        produced: function () { return stream.produced(); },
+        slice: function (s, l) { return stream.slice(s, l); },
+        ensure: async function (targetOut) {
+          while (stream.produced() < targetOut && !stream.done() && consumed < bh.cmpLength) {
+            var n = Math.min(STREAM_CHUNK, bh.cmpLength - consumed);
+            var chunk = await read(blockOffset + 36 + consumed, n);
+            stream.feed(chunk);
+            consumed += n;
+          }
+        }
+      };
+    }
 
     async function readSector(lba) {
       if (!ddt || ddt.version !== 2) throw new Error('DDT v2 not loaded');
@@ -293,30 +349,19 @@
         return null; // sector not dumped
       }
 
-      // Cache the whole block (header + decompressed payload) so nearby sectors
-      // hit the cache without an extra header read per sector.
-      var cached = blockCache.get(dec.blockOffset);
-      if (!cached) {
-        var bhBytes = await read(dec.blockOffset, 36);
-        var bh = parseBlockHeader(bhBytes);
-        if (bh.id !== BLOCK_TYPE.DataBlock) {
-          throw new Error('DDT entry points to non-data block at ' + dec.blockOffset);
-        }
-        var payload = await codec.decompress(
-          bh.compression,
-          await read(dec.blockOffset + 36, bh.cmpLength),
-          bh.length
-        );
-        cached = { bh: bh, payload: payload };
-        blockCache.set(dec.blockOffset, cached);
+      var stream = blockStreams.get(dec.blockOffset);
+      if (!stream) {
+        stream = await openBlockStream(dec.blockOffset);
+        blockStreams.set(dec.blockOffset, stream);
       }
 
-      var sectorBytes = cached.bh.sectorSize || sectorSize;
-      var start = dec.sectorInBlock * sectorBytes;
-      if (start + sectorBytes > cached.payload.length) {
+      var targetOut = (dec.sectorInBlock + 1) * stream.sectorBytes;
+      await stream.ensure(targetOut);
+      if (stream.produced() < targetOut) {
         throw new Error('Sector beyond decompressed block payload');
       }
-      return cached.payload.subarray(start, start + sectorBytes);
+      var start = dec.sectorInBlock * stream.sectorBytes;
+      return stream.slice(start, stream.sectorBytes);
     }
 
     return {
