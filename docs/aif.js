@@ -236,15 +236,19 @@
     var headerBytes = await read(0, 147);
     var header = parseHeader(headerBytes);
 
-    // Read the index header to learn the entry count, then read the whole index.
-    var indexHeaderBytes = await read(header.indexOffset, 28);
-    var idxId = ascii(indexHeaderBytes, 0, 4);
+    // Read the index header + entries in one request. The index is small (a few
+    // KiB), so a 256 KiB chunk covers it; fall back only for huge indexes.
+    var indexBytes = await read(header.indexOffset, 256 * 1024);
+    var idxId = ascii(indexBytes, 0, 4);
     var idxHeaderSize, idxEntryCount;
-    if (idxId === BLOCK_TYPE.Index1) { idxHeaderSize = 14; idxEntryCount = rdU16(indexHeaderBytes, 4); }
-    else if (idxId === BLOCK_TYPE.Index2) { idxHeaderSize = 20; idxEntryCount = rdU64(indexHeaderBytes, 4); }
-    else if (idxId === BLOCK_TYPE.Index3) { idxHeaderSize = 28; idxEntryCount = rdU64(indexHeaderBytes, 4); }
+    if (idxId === BLOCK_TYPE.Index1) { idxHeaderSize = 14; idxEntryCount = rdU16(indexBytes, 4); }
+    else if (idxId === BLOCK_TYPE.Index2) { idxHeaderSize = 20; idxEntryCount = rdU64(indexBytes, 4); }
+    else if (idxId === BLOCK_TYPE.Index3) { idxHeaderSize = 28; idxEntryCount = rdU64(indexBytes, 4); }
     else throw new Error('Unknown index block identifier: ' + JSON.stringify(idxId));
-    var indexBytes = await read(header.indexOffset, idxHeaderSize + idxEntryCount * 14);
+    var indexNeed = idxHeaderSize + idxEntryCount * 14;
+    if (indexNeed > indexBytes.length) {
+      indexBytes = await read(header.indexOffset, indexNeed);
+    }
     var index = parseIndex(indexBytes);
 
     // Locate the user-data DDT block.
@@ -259,17 +263,28 @@
     }
     if (!ddtEntry) throw new Error('Aaru image has no user-data DDT block');
 
-    var ddtHeaderBytes = await read(ddtEntry.offset, 85);
+    // Read the DDT header + compressed payload in one 256 KiB request; fall
+    // back only when the payload is larger (e.g. DVDs).
+    var ddtBytes = await read(ddtEntry.offset, 256 * 1024);
 
     var ddt;
     if (ddtEntry.blockType === BLOCK_TYPE.Ddt2) {
-      var h2 = parseDdtHeader2(ddtHeaderBytes);
+      var h2 = parseDdtHeader2(ddtBytes);
       if (h2.id !== BLOCK_TYPE.Ddt2) throw new Error('Bad DDT2 identifier');
       if (h2.tableShift !== 0) {
         throw new Error('Multi-level DDT (tableShift != 0) not implemented yet');
       }
-      // Read the compressed entries payload (its exact size is in the header).
-      var ddtPayload = await read(ddtEntry.offset + 85, h2.cmpLength);
+      var ddtNeed = 85 + h2.cmpLength;
+      if (ddtNeed > ddtBytes.length) {
+        // Payload is larger than the first chunk: read the remaining bytes and
+        // append instead of re-reading from the start.
+        var ddtMore = await read(ddtEntry.offset + ddtBytes.length, ddtNeed - ddtBytes.length);
+        var ddtCombined = new Uint8Array(ddtNeed);
+        ddtCombined.set(ddtBytes, 0);
+        ddtCombined.set(ddtMore, ddtBytes.length);
+        ddtBytes = ddtCombined;
+      }
+      var ddtPayload = ddtBytes.subarray(85, 85 + h2.cmpLength);
       var bodyComp = await codec.decompress(h2.compression, ddtPayload, h2.length);
       ddt = { version: 2, header: h2, entries: bodyComp };
     } else {
