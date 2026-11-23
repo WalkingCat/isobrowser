@@ -365,6 +365,7 @@
   const ISO_CACHE_MAX = 32;         // max cached blocks (8 MiB)
 
   async function readDataCached(url, lba, size) {
+    if (aifReader) return readData(url, lba, size); // AIF has its own block cache
     if (sectorSize !== 2048) return readData(url, lba, size); // only cache 2048-byte sectors
     const byteOff = lba * 2048;
     const blockStart = Math.floor(byteOff / ISO_CACHE_BLOCK) * ISO_CACHE_BLOCK;
