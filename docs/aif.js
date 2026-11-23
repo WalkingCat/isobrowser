@@ -277,7 +277,7 @@
     }
 
     var sectorSize = header.biggestSectorSize || 2048;
-    var blockCache = new Map(); // blockOffset -> decompressed payload
+    var blockCache = new Map(); // blockOffset -> { bh, payload }
 
     async function readSector(lba) {
       if (!ddt || ddt.version !== 2) throw new Error('DDT v2 not loaded');
@@ -293,29 +293,30 @@
         return null; // sector not dumped
       }
 
-      // Read the block header, then its payload.
-      var bhBytes = await read(dec.blockOffset, 36);
-      var bh = parseBlockHeader(bhBytes);
-      if (bh.id !== BLOCK_TYPE.DataBlock) {
-        throw new Error('DDT entry points to non-data block at ' + dec.blockOffset);
-      }
-
-      var payload = blockCache.get(dec.blockOffset);
-      if (!payload) {
-        payload = await codec.decompress(
+      // Cache the whole block (header + decompressed payload) so nearby sectors
+      // hit the cache without an extra header read per sector.
+      var cached = blockCache.get(dec.blockOffset);
+      if (!cached) {
+        var bhBytes = await read(dec.blockOffset, 36);
+        var bh = parseBlockHeader(bhBytes);
+        if (bh.id !== BLOCK_TYPE.DataBlock) {
+          throw new Error('DDT entry points to non-data block at ' + dec.blockOffset);
+        }
+        var payload = await codec.decompress(
           bh.compression,
           await read(dec.blockOffset + 36, bh.cmpLength),
           bh.length
         );
-        blockCache.set(dec.blockOffset, payload);
+        cached = { bh: bh, payload: payload };
+        blockCache.set(dec.blockOffset, cached);
       }
 
-      var sectorBytes = bh.sectorSize || sectorSize;
+      var sectorBytes = cached.bh.sectorSize || sectorSize;
       var start = dec.sectorInBlock * sectorBytes;
-      if (start + sectorBytes > payload.length) {
+      if (start + sectorBytes > cached.payload.length) {
         throw new Error('Sector beyond decompressed block payload');
       }
-      return payload.subarray(start, start + sectorBytes);
+      return cached.payload.subarray(start, start + sectorBytes);
     }
 
     return {
