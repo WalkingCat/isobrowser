@@ -157,7 +157,9 @@ async function readOuterBytes(session, byteOffset, len) {
 // Recursively read a file's bytes (supports outer ISO -> nested archive -> file)
 async function readFileData(session, f) {
   if (!f.inner) {
-    return session.archiveType === 'zip' ? extractZip(session, f) : readIso(session, f);
+    if (session.archiveType === 'zip') return extractZip(session, f);
+    if (session.archiveType === 'hfs') return readHfsFile(session, f);
+    return readIso(session, f);
   }
   const base = f.inner.containerLba * 2048;  // byte offset of the nested archive in the outer ISO
   if (f.method !== undefined) {
@@ -185,6 +187,23 @@ async function readFileData(session, f) {
   const out = new Uint8Array(n * 2048);
   for (let i = 0; i < n; i++) out.set(raw.subarray(i * ss + off, i * ss + off + 2048), i * 2048);
   return out.subarray(0, f.size);
+}
+
+// Read a classic-HFS file's data fork from its allocation-block extents.
+async function readHfsFile(session, f) {
+  const vol = session.hfsVol;
+  const size = f.dataSize !== undefined ? f.dataSize : f.size;
+  const out = new Uint8Array(size);
+  let p = 0;
+  for (const e of f.extents) {
+    if (!e || !e.count || p >= size) break;
+    const off = vol.baseOffset + vol.alBlSt * 512 + e.start * vol.blockSize;
+    const want = Math.min(e.count * vol.blockSize, size - p);
+    const data = await fetchRange(session.url, off, want);
+    out.set(data, p);
+    p += data.length;
+  }
+  return out;
 }
 
 // ---- ISO directory fallback: re-walk only the un-parsed path on a miss ----

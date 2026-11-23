@@ -20,6 +20,10 @@
   .controls { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
   #url { flex: 1; min-width: 0; height: 22px; box-sizing: border-box; padding: 2px 8px; font-size: 12px; border: 1px solid #888; border-radius: 4px; }
   #filter { width: 100px; height: 20px; box-sizing: border-box; padding: 2px 8px; font-size: 12px; border: 1px solid #888; border-radius: 4px; }
+  .filter-wrap { position: relative; display: inline-flex; }
+  .filter-wrap #filter { padding-right: 18px; }
+  .filter-clear { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; padding: 0; border: none; background: transparent; font-size: 14px; line-height: 1; color: #888; cursor: pointer; }
+  .filter-clear:hover { color: #c00; }
   #urlLink { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
   .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 100; display: flex; align-items: center; justify-content: center; }
   .modal { background: Canvas; color: CanvasText; border: 1px solid #888; border-radius: 8px; min-width: 560px; max-width: 80vw; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25); }
@@ -122,7 +126,10 @@
       <span class="nav-status" id="mainStatus"></span>
       <button id="modeTree" class="active" title="Tree">Tree</button>
       <button id="modeFlat" title="List">List</button>
-      <input id="filter" type="text" placeholder="Filter by name...">
+      <span class="filter-wrap">
+        <input id="filter" type="text" placeholder="Filter by name...">
+        <button class="filter-clear hidden" title="Clear">×</button>
+      </span>
     </div>
     <div id="result"></div>
   </div>
@@ -169,6 +176,7 @@
   const modeTree = document.getElementById('modeTree');
   const modeFlat = document.getElementById('modeFlat');
   const filterEl = document.getElementById('filter');
+  const filterClearEl = document.querySelector('.filter-clear');
   const mainStatusEl = document.getElementById('mainStatus');
   const resultEl = document.getElementById('result');
   const openDlg = document.getElementById('openDlg');
@@ -216,6 +224,8 @@
   let archiveType = 'iso';                 // 'iso' | 'zip'
   let isJoliet = false;                    // ISO: volume uses Joliet (UCS-2) names
   let rootLba = 0, rootSize = 0;           // ISO: root directory location (for SW fallback)
+  let hfsVol = null;                       // HFS: volume metadata (from HFS.detect)
+  let hfsPromise = null;                   // HFS: lazy-load promise for hfs.js
   let zipFiles = null;                     // ZIP: complete file map, ready before progressive render finishes
   let dirSize = null;                      // Map: dir path -> accumulated descendant size
   let nodeByPath = null;                   // Map: node path -> node
@@ -251,13 +261,30 @@
     throw new Error('HTTP ' + res.status + ' ' + (res.statusText || ''));
   }
 
-  // Detect archive format: ISO 9660 (2048/2352-byte sectors) or ZIP
+  // Lazy-load hfs.js (classic Mac HFS support) on first use.
+  // Bump this version after editing hfs.js to force browsers to fetch the new file.
+  const HFS_VERSION = 1;
+  function loadHfs() {
+    if (!hfsPromise) {
+      hfsPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'hfs.js?v=' + HFS_VERSION;
+        s.onload = () => resolve(globalThis.HFS);
+        s.onerror = () => reject(new Error('Failed to load hfs.js'));
+        document.head.appendChild(s);
+      });
+    }
+    return hfsPromise;
+  }
+
+  // Detect archive format: ISO 9660 (2048/2352-byte sectors), ZIP, or Apple HFS
   async function detectFormat(url) {
     const probe = await readRange(url, 0, 65536);
     const sig = (off) => off + 5 < probe.length && ascii(probe.subarray(off, off + 5)) === 'CD001';
     if (sig(16 * 2048 + 1)) return { type: 'iso', sectorSize: 2048, dataOffset: 0 };
     if (sig(16 * 2352 + 16 + 1)) return { type: 'iso', sectorSize: 2352, dataOffset: 16 };
     if (probe.length >= 2 && probe[0] === 0x50 && probe[1] === 0x4B) return { type: 'zip' };  // "PK"
+    if (probe.length >= 514 && probe[512] === 0x50 && probe[513] === 0x4D) return { type: 'hfs' };  // "PM" Apple Partition Map
     return null;
   }
 
@@ -323,7 +350,13 @@
       try { return new TextDecoder(m[1]).decode(bytes); } catch (e) {}
     }
     try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-    catch (e) { return new TextDecoder('windows-1252').decode(bytes); }
+    catch (e) {
+      // HFS text is usually MacRoman; elsewhere fall back to windows-1252
+      if (archiveType === 'hfs') {
+        try { return new TextDecoder('macintosh').decode(bytes); } catch (_) {}
+      }
+      return new TextDecoder('windows-1252').decode(bytes);
+    }
   }
 
   // ---- MHT (MHTML) support ----
@@ -864,10 +897,11 @@
     throw new Error('Unsupported ZIP compression method ' + node.method);
   }
 
-  // Read a file's decompressed bytes (works for ISO, ZIP, and nested archives)
+  // Read a file's decompressed bytes (works for ISO, ZIP, HFS, and nested archives)
   async function readFileContent(node) {
     if (node.readFile) return await node.readFile();
     if (archiveType === 'zip') return await zipExtractFile(currentUrl, node);
+    if (archiveType === 'hfs') return await HFS.readFile((off, len) => readRange(currentUrl, off, len), hfsVol, node);
     return await readData(currentUrl, node.lba, node.size);
   }
 
@@ -1208,7 +1242,6 @@
       if (n.isDir) { dirSize.set(n.path, 0); dirCount++; }
       else { onFileAdded(n, dirSize, nodeByPath); fileCount++; totalBytes += n.size; }
       mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, null);
-      mainStatusEl.classList.add('loading');
       await new Promise(r => setTimeout(r, 0));
     }
 
@@ -1279,9 +1312,30 @@
     return null;
   }
 
+  // Map a classic-Mac OSType to a browser-previewable category (null if unknown).
+  function hfsPreviewType(type) {
+    switch (type) {
+      case 'TEXT': case 'ttro': return 'text';
+      case 'GIFf': case 'JPEG': case 'PICT': case 'PNGf': case 'TIFF': case 'BMPf': case '8BPS': return 'image';
+      case 'MooV': case 'MPG ': case 'MPEG': return 'video';
+      case 'AIFF': case 'snd ': case 'MP3 ': case 'sfil': case 'WAVE': return 'audio';
+      case 'PDF ': return 'pdf';
+      case 'HTML': return 'html';
+      default: return null;
+    }
+  }
+
+  // Preview category for a node: filename extension first, then HFS OSType.
+  function previewTypeOf(node) {
+    const byExt = previewType(node ? node.name : '');
+    if (byExt) return byExt;
+    if (node && node.type) return hfsPreviewType(node.type);
+    return null;
+  }
+
   // Emoji for a file, based on its preview category
-  function fileIcon(name) {
-    const t = previewType(name);
+  function fileIcon(node) {
+    const t = previewTypeOf(node);
     if (t === 'image') return '🖼️';
     if (t === 'video') return '🎬';
     if (t === 'audio') return '🎵';
@@ -1355,6 +1409,12 @@
       const dirs = {};
       if (archiveType === 'zip') {
         if (zipFiles) Object.assign(files, zipFiles);
+      } else if (archiveType === 'hfs') {
+        for (const n of allNodes) {
+          const key = n.path.slice(1).toLowerCase();
+          if (n.isDir) continue;
+          files[key] = { extents: n.extents, dataSize: n.dataSize, size: n.size };
+        }
       } else {
         dirs[''] = { lba: rootLba, size: rootSize };
         for (const n of allNodes) {
@@ -1368,7 +1428,7 @@
         channel.port1.onmessage = () => resolve();
         navigator.serviceWorker.controller.postMessage({
           type: 'set-session', sessionId,
-          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText }
+          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined }
         }, [channel.port2]);
       });
       // Load the HTML at its real archive-relative path so the browser resolves
@@ -1561,7 +1621,7 @@
     const ov = { _url: null, _sessionId: null, _statusEl: null };
     currentPreview = ov;
     pane.innerHTML = '<div class="preview-head">'
-      + '<span class="preview-title">' + fileIcon(node.name) + ' <a href="' + esc(fileLink(node.archivePath ? node.archivePath + node.path : node.path)) + '" target="_blank" rel="noopener">' + esc(node.name) + '</a></span>'
+      + '<span class="preview-title">' + fileIcon(node) + ' <a href="' + esc(fileLink(node.archivePath ? node.archivePath + node.path : node.path)) + '" target="_blank" rel="noopener">' + esc(node.name) + '</a></span>'
       + '<span class="preview-status"></span>'
       + '<div class="preview-actions">'
       + '<button class="preview-1to1" title="Toggle 1:1">1:1</button>'
@@ -1586,9 +1646,10 @@
         content.innerHTML = '';
 
         if (type === 'text') {
-          const text = decodeText(data);
+          const text = decodeText(data).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
           const pre = document.createElement('pre');
           pre.textContent = text;
+          pre.style.whiteSpace = 'pre-wrap';   // wrap long lines by default
           content.appendChild(pre);
           toggleBtn.style.display = 'none';
           let fs = 13;
@@ -1596,9 +1657,17 @@
           applyFs();
           const zoomBox = document.createElement('div');
           zoomBox.className = 'preview-zoom';
-          zoomBox.innerHTML = '<button class="zoom-out" title="Smaller">A−</button><button class="zoom-in" title="Larger">A+</button>';
+          zoomBox.innerHTML = '<button class="wrap" title="Toggle wrap">Wrap</button><button class="zoom-out" title="Smaller">A−</button><button class="zoom-in" title="Larger">A+</button>';
           const close = head.querySelector('.preview-close');
           close.parentNode.insertBefore(zoomBox, close);
+          let wrap = true;
+          const wrapBtn = zoomBox.querySelector('.wrap');
+          wrapBtn.classList.add('active');
+          wrapBtn.addEventListener('click', () => {
+            wrap = !wrap;
+            pre.style.whiteSpace = wrap ? 'pre-wrap' : 'pre';
+            wrapBtn.classList.toggle('active', wrap);
+          });
           zoomBox.querySelector('.zoom-out').addEventListener('click', () => { fs = Math.max(8, fs - 2); applyFs(); });
           zoomBox.querySelector('.zoom-in').addEventListener('click', () => { fs = Math.min(48, fs + 2); applyFs(); });
           return;
@@ -1703,8 +1772,8 @@
       name.appendChild(spinner);
       node.treeLoadingEl = spinner;
     } else {
-      const pt = previewType(node.name);
-      name.innerHTML = '<span class="tree-main"><span class="file">' + fileIcon(node.name) + ' <a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener" title="' + esc(node.name) + '">' + esc(node.name) + '</a></span></span>'
+      const pt = previewTypeOf(node);
+      name.innerHTML = '<span class="tree-main"><span class="file">' + fileIcon(node) + ' <a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener" title="' + esc(node.name) + '">' + esc(node.name) + '</a></span></span>'
         + (pt && !(pt === 'archive' && node._noBrowse) ? '<span class="preview-icon" title="' + (pt === 'archive' ? 'Browse' : 'Preview') + '">' + (pt === 'archive' ? '🔍' : '👁') + '</span>' : '');
       node.treeNameSpan = name;
       attachDownload(name.querySelector('a'), node);
@@ -1749,8 +1818,8 @@
       name.appendChild(spinner);
       node.flatLoadingEl = spinner;
     } else {
-      const pt = previewType(node.name);
-      name.innerHTML = '<span class="tree-main">' + fileIcon(node.name) + ' <a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener" title="' + esc(node.path) + '">' + esc(node.path) + '</a></span>'
+      const pt = previewTypeOf(node);
+      name.innerHTML = '<span class="tree-main">' + fileIcon(node) + ' <a href="' + esc(fileLink(node.path)) + '" target="_blank" rel="noopener" title="' + esc(node.path) + '">' + esc(node.path) + '</a></span>'
         + (pt && !(pt === 'archive' && node._noBrowse) ? '<span class="preview-icon" title="' + (pt === 'archive' ? 'Browse' : 'Preview') + '">' + (pt === 'archive' ? '🔍' : '👁') + '</span>' : '');
       node.flatNameSpan = name;
       attachDownload(name.querySelector('a'), node);
@@ -1828,6 +1897,9 @@
     urlLink.textContent = fileNameFromUrl(url);
     document.title = fileNameFromUrl(url) + ' - ISOBrowser';
     mainStatusEl.textContent = 'Reading...';
+    mainStatusEl.classList.add('loading');
+    filterEl.value = '';
+    filterClearEl.classList.add('hidden');
     resultEl.innerHTML = '';
     const tv = makeView(), fv = makeView();
     treeView = tv.view; treeRoot = tv.list;
@@ -1853,6 +1925,82 @@
       if (fmt.type === 'zip') {
         archiveType = 'zip';
         await parseZip(url, gen);
+        return;
+      }
+      if (fmt.type === 'hfs') {
+        archiveType = 'hfs';
+        await loadHfs();
+        const hfsRead = (off, len) => readRange(url, off, len);
+        const vol = await HFS.detect(hfsRead);
+        if (gen !== parseGen) return;
+        if (!vol) throw new Error('Apple Partition Map found, but no HFS Master Directory Block ("BD")');
+        hfsVol = vol;
+        // Stream the catalog and mount entries incrementally (parents come first).
+        // dirStack tracks directories whose subtree is still loading; pop by CNID/subtreeEnd.
+        let counter = 0;
+        const dirStack = [];
+        for await (const e of HFS.catalogEntries(hfsRead, vol)) {
+          if (gen !== parseGen) return;
+          const depth = e.path.split('/').filter(Boolean).length;
+          const child = { name: e.name, path: e.path, isDir: e.isDir, size: e.size, depth, date: '' };
+          if (!e.isDir) { child.extents = e.extents; child.type = e.type; child.dataSize = e.dataSize; }
+          allNodes.push(child);
+          nodeByPath.set(child.path, child);
+          appendTreeNode(child, depth, childBoxes, treeRoot);
+          appendFlatProgressive(child, flatList, lastChild);
+          if (child.isDir) {
+            dirSize.set(child.path, 0);
+            dirCount++;
+            const pid = e.parentID, cid = e.cnid;
+            // Close every directory with subtreeEnd <= pid (its whole subtree is done).
+            const remaining = [];
+            for (const d of dirStack) {
+              if (d.subtreeEnd <= pid) setDirLoading(d.node, false);
+              else remaining.push(d);
+            }
+            dirStack.length = 0;
+            dirStack.push(...remaining);
+            // The most recent sibling with the same parentID: set its subtree end to this CNID.
+            for (let i = dirStack.length - 1; i >= 0; i--) {
+              if (dirStack[i].parentId === pid) { dirStack[i].subtreeEnd = cid; break; }
+            }
+            // A new directory inherits its parent's subtreeEnd (if on the stack), else Infinity,
+            // so the last child ends when an ancestor's sibling appears, not only at stream end.
+            let subtreeEnd = Infinity;
+            for (let i = dirStack.length - 1; i >= 0; i--) {
+              if (dirStack[i].cnid === pid) { subtreeEnd = dirStack[i].subtreeEnd; break; }
+            }
+            setDirLoading(child, true);
+            dirStack.push({ node: child, cnid: cid, parentId: pid, subtreeEnd });
+          } else {
+            onFileAdded(child, dirSize, nodeByPath);
+            fileCount++;
+            totalBytes += child.size;
+          }
+          if ((++counter % 40) === 0) {
+            mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol.volName);
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+
+        mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol.volName);
+        mainStatusEl.classList.remove('loading');
+        // After streaming, close the spinner on any directories left on the stack.
+        while (dirStack.length) setDirLoading(dirStack.pop().node, false);
+
+        // Reorder allNodes into DFS order (for filtering), like the ISO branch.
+        const ordered = [];
+        (function walk(container) {
+          for (const el of container.children) {
+            const n = el._node;
+            if (!n) continue;
+            ordered.push(n);
+            const box = n.isDir ? childBoxes.get(n.path) : null;
+            if (box) walk(box);
+          }
+        })(treeRoot);
+        allNodes = ordered;
+        await applyFileDescriptions();
         return;
       }
       archiveType = 'iso';
@@ -1894,7 +2042,6 @@
         pending.set(node.path, subdirs);
         if (subdirs === 0) completeDir(pending, lookup, node.path);
         mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol);
-        mainStatusEl.classList.add('loading');
         await new Promise(r => setTimeout(r, 0));
       }
 
@@ -1917,6 +2064,7 @@
     } catch (e) {
       if (gen !== parseGen) return;  // superseded by a new parse
       mainStatusEl.textContent = '';
+      mainStatusEl.classList.remove('loading');
       resultEl.innerHTML = '<div style="color:#c00">Parse failed: ' + esc(e.message) + '</div>';
     }
   }
@@ -1925,17 +2073,23 @@
     mode = 'tree';
     modeTree.classList.add('active');
     modeFlat.classList.remove('active');
-    filterEl.value = '';
-    applyMode();
+    applyFilter();
   });
   modeFlat.addEventListener('click', () => {
     mode = 'flat';
     modeFlat.classList.add('active');
     modeTree.classList.remove('active');
-    filterEl.value = '';
-    applyMode();
+    applyFilter();
   });
-  filterEl.addEventListener('input', applyFilter);
+  filterEl.addEventListener('input', () => {
+    filterClearEl.classList.toggle('hidden', !filterEl.value);
+    applyFilter();
+  });
+  filterClearEl.addEventListener('click', () => {
+    filterEl.value = '';
+    filterClearEl.classList.add('hidden');
+    applyFilter();
+  });
   parseBtn.addEventListener('click', () => parse());
   pasteBtn.addEventListener('click', async () => {
     try {
