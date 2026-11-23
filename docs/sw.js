@@ -4,7 +4,7 @@
 
 // AIF container support (used only when a session carries aif === true).
 // Non-fatal if the files are missing — ISO/ZIP/HFS still work.
-try { importScripts('lzma1.bundle.js', 'aif.js'); } catch (e) {}
+try { importScripts('lzma1.bundle.js', 'aif.js', 'udf.js'); } catch (e) {}
 
 const sessions = new Map();
 const aifReaders = new WeakMap(); // session object -> Promise<AIF reader>
@@ -164,6 +164,7 @@ async function readFileData(session, f) {
   if (!f.inner) {
     if (session.archiveType === 'zip') return extractZip(session, f);
     if (session.archiveType === 'hfs') return readHfsFile(session, f);
+    if (session.archiveType === 'udf') return readUdfFile(session, f);
     if (session.aif) return readAifFile(session, f);
     return readIso(session, f);
   }
@@ -244,6 +245,22 @@ async function aifByteRead(session, off, len) {
     out.set(s ? s.subarray(0, 2048) : new Uint8Array(2048), i * 2048);
   }
   return out.subarray(off - first * 2048, off - first * 2048 + len);
+}
+
+// Read a UDF file by concatenating its allocation extents.
+async function readUdfFile(session, f) {
+  const vol = session.udfVol;
+  const out = new Uint8Array(f.size);
+  let off = 0;
+  for (const e of f.extents) {
+    if (off >= f.size) break;
+    const want = Math.min(e.len, f.size - off);
+    const absOff = (vol.partitionStart + e.loc) * vol.blockSize;
+    const data = session.aif ? await aifByteRead(session, absOff, want) : await fetchRange(session.url, absOff, want);
+    out.set(data, off);
+    off += data.length;
+  }
+  return out;
 }
 
 // ---- ISO directory fallback: re-walk only the un-parsed path on a miss ----

@@ -228,6 +228,8 @@
   let hfsPromise = null;                   // HFS: lazy-load promise for hfs.js
   let aifReader = null;                    // AIF: container reader (from AIF.open); routes readData through it
   let aifPromise = null;                   // AIF: lazy-load promise for aif.js (+ lzma1.bundle.js)
+  let udfVol = null;                       // UDF: volume metadata (from UDF.detect)
+  let udfPromise = null;                   // UDF: lazy-load promise for udf.js
   let zipFiles = null;                     // ZIP: complete file map, ready before progressive render finishes
   let dirSize = null;                      // Map: dir path -> accumulated descendant size
   let nodeByPath = null;                   // Map: node path -> node
@@ -300,10 +302,30 @@
     return aifPromise;
   }
 
+  // Lazy-load udf.js (Universal Disk Format support) on first use.
+  const UDF_VERSION = 1;
+  function loadUdf() {
+    if (!udfPromise) {
+      udfPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'udf.js?v=' + UDF_VERSION;
+        s.onload = () => resolve(globalThis.UDF);
+        s.onerror = () => reject(new Error('Failed to load udf.js'));
+        document.head.appendChild(s);
+      });
+    }
+    return udfPromise;
+  }
+
   // Detect archive format: ISO 9660 (2048/2352-byte sectors), ZIP, or Apple HFS
   async function detectFormat(url) {
     const probe = await readRange(url, 0, 65536);
     const sig = (off) => off + 5 < probe.length && ascii(probe.subarray(off, off + 5)) === 'CD001';
+    // UDF first: ISO/UDF bridge discs carry both an ISO PVD and a UDF anchor; prefer UDF for full names.
+    try {
+      const anchor = await readRange(url, 256 * 2048, 8);
+      if (anchor.length >= 2 && anchor[0] === 0x02 && anchor[1] === 0x00) return { type: 'udf' };
+    } catch (e) {}
     if (sig(16 * 2048 + 1)) return { type: 'iso', sectorSize: 2048, dataOffset: 0 };
     if (sig(16 * 2352 + 16 + 1)) return { type: 'iso', sectorSize: 2352, dataOffset: 16 };
     if (probe.length >= 2 && probe[0] === 0x50 && probe[1] === 0x4B) return { type: 'zip' };  // "PK"
@@ -334,6 +356,54 @@
       out.set(raw.subarray(s, s + 2048), i * 2048);
     }
     return out.subarray(0, size);
+  }
+
+  // Read-ahead cache for the ISO directory BFS: directories are small and often
+  // contiguous, so read one 256 KiB aligned block and serve nearby reads from it.
+  const isoReadCache = new Map();   // blockStart -> Uint8Array
+  const ISO_CACHE_BLOCK = 256 * 1024;
+  const ISO_CACHE_MAX = 32;         // max cached blocks (8 MiB)
+
+  async function readDataCached(url, lba, size) {
+    if (sectorSize !== 2048) return readData(url, lba, size); // only cache 2048-byte sectors
+    const byteOff = lba * 2048;
+    const blockStart = Math.floor(byteOff / ISO_CACHE_BLOCK) * ISO_CACHE_BLOCK;
+    if (byteOff + size > blockStart + ISO_CACHE_BLOCK) {
+      return readData(url, lba, size); // large or cross-block read: read directly
+    }
+    let block = isoReadCache.get(blockStart);
+    if (!block) {
+      block = await readRange(url, blockStart, ISO_CACHE_BLOCK);
+      isoReadCache.set(blockStart, block);
+      if (isoReadCache.size > ISO_CACHE_MAX) {
+        isoReadCache.delete(isoReadCache.keys().next().value);
+      }
+    }
+    const off = byteOff - blockStart;
+    if (off + size > block.length) return readData(url, lba, size); // block truncated near EOF
+    return block.subarray(off, off + size);
+  }
+
+  // Generic read-ahead cache (byte-offset based) — wraps the UDF parser's read
+  // callback so nearby FE/ICB and directory-data reads share one block.
+  const READ_CACHE_BLOCK = 256 * 1024;
+  const READ_CACHE_MAX = 32;
+
+  function makeCachedRead(read) {
+    const cache = new Map();
+    return async function cachedRead(off, len) {
+      const blockStart = Math.floor(off / READ_CACHE_BLOCK) * READ_CACHE_BLOCK;
+      if (off + len > blockStart + READ_CACHE_BLOCK) return read(off, len);
+      let block = cache.get(blockStart);
+      if (!block) {
+        block = await read(blockStart, READ_CACHE_BLOCK);
+        cache.set(blockStart, block);
+        if (cache.size > READ_CACHE_MAX) cache.delete(cache.keys().next().value);
+      }
+      const o = off - blockStart;
+      if (o + len > block.length) return read(off, len); // truncated near EOF
+      return block.subarray(o, o + len);
+    };
   }
 
   // Byte-offset read through the AIF sector reader (feeds the HFS parser when
@@ -951,6 +1021,10 @@
       const byteRead = aifReader ? aifByteRead : (off, len) => readRange(currentUrl, off, len);
       return await HFS.readFile(byteRead, hfsVol, node);
     }
+    if (archiveType === 'udf') {
+      const byteRead = aifReader ? aifByteRead : (off, len) => readRange(currentUrl, off, len);
+      return await UDF.readFile(byteRead, udfVol, node);
+    }
     return await readData(currentUrl, node.lba, node.size);
   }
 
@@ -1477,7 +1551,7 @@
         channel.port1.onmessage = () => resolve();
         navigator.serviceWorker.controller.postMessage({
           type: 'set-session', sessionId,
-          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined }
+          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined, udfVol: archiveType === 'udf' ? { blockSize: udfVol.blockSize, partitionStart: udfVol.partitionStart } : undefined }
         }, [channel.port2]);
       });
       // Load the HTML at its real archive-relative path so the browser resolves
@@ -1973,6 +2047,7 @@
     let dirCount = 0, fileCount = 0, totalBytes = 0;
     try {
       aifReader = null;   // reset; a fresh AIF reader is created below when needed
+      isoReadCache.clear();
       const fmt = await detectFormat(url);
       if (gen !== parseGen) return;
       if (!fmt) {
@@ -2044,6 +2119,71 @@
         await applyFileDescriptions();
         return true;
       }
+      // Mount a UDF catalog into the tree (BFS, sorted entries, post-order completion).
+      async function mountUdf(read, vol) {
+        const queue = [{ loc: vol.rootLoc, path: '', depth: 0 }];
+        const pending = new Map();
+        const lookup = (p) => nodeByPath.get(p);
+        while (queue.length > 0) {
+          if (gen !== parseGen) return false;
+          const dir = queue.shift();
+          const entries = await UDF.readDir(read, vol, dir.loc);
+          if (gen !== parseGen) return false;
+          let subdirs = 0;
+          for (const e of entries) {
+            const path = dir.path === '' ? '/' + e.name : dir.path + '/' + e.name;
+            const child = { name: e.name, path, isDir: e.isDir, size: e.size, depth: dir.depth + 1, date: '' };
+            if (!e.isDir) child.extents = e.extents;
+            allNodes.push(child);
+            nodeByPath.set(child.path, child);
+            appendTreeNode(child, child.depth, childBoxes, treeRoot);
+            appendFlatProgressive(child, flatList, lastChild);
+            if (child.isDir) {
+              dirSize.set(child.path, 0);
+              dirCount++;
+              subdirs++;
+              setDirLoading(child, true);
+              queue.push({ loc: e.loc, path, depth: dir.depth + 1 });
+            } else {
+              onFileAdded(child, dirSize, nodeByPath);
+              fileCount++;
+              totalBytes += child.size;
+            }
+          }
+          pending.set(dir.path, subdirs);
+          if (subdirs === 0) completeDir(pending, lookup, dir.path);
+          mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, 'UDF');
+          mainStatusEl.classList.add('loading');
+          await new Promise(r => setTimeout(r, 0));
+        }
+        if (gen !== parseGen) return false;
+        mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, 'UDF');
+        mainStatusEl.classList.remove('loading');
+        const ordered = [];
+        (function walk(container) {
+          for (const el of container.children) {
+            const n = el._node;
+            if (!n) continue;
+            ordered.push(n);
+            const box = n.isDir ? childBoxes.get(n.path) : null;
+            if (box) walk(box);
+          }
+        })(treeRoot);
+        allNodes = ordered;
+        await applyFileDescriptions();
+        return true;
+      }
+      if (fmt.type === 'udf') {
+        archiveType = 'udf';
+        await loadUdf();
+        const udfRead = makeCachedRead((off, len) => readRange(url, off, len));
+        const vol = await UDF.detect(udfRead);
+        if (gen !== parseGen) return;
+        if (!vol) throw new Error('UDF anchor found, but volume parsing failed');
+        udfVol = vol;
+        await mountUdf(udfRead, vol);
+        return;
+      }
       if (fmt.type === 'hfs') {
         archiveType = 'hfs';
         await loadHfs();
@@ -2063,10 +2203,23 @@
         // Probe the filesystem inside the container.
         const s16 = await aifReader.readSector(16);
         const s0 = await aifReader.readSector(0);
+        let s256 = null;
+        try { s256 = await aifReader.readSector(256); } catch (e) {}
+        const isUdf = s256 && s256[0] === 0x02 && s256[1] === 0x00;
         const isIso = s16 && ascii(s16.subarray(1, 6)) === 'CD001';
         const isHfs = s0 && ((s0[512] === 0x50 && s0[513] === 0x4D) || (s0[1024] === 0x42 && s0[1025] === 0x44));
 
-        if (isIso) {
+        if (isUdf) {
+          archiveType = 'udf';
+          await loadUdf();
+          const udfRead = makeCachedRead(aifByteRead);
+          const vol = await UDF.detect(udfRead);
+          if (gen !== parseGen) return;
+          if (!vol) throw new Error('UDF anchor found in AIF, but volume parsing failed');
+          udfVol = vol;
+          await mountUdf(udfRead, vol);
+          return;
+        } else if (isIso) {
           archiveType = 'iso';
           sectorSize = 2048;
           dataOffset = 0;
@@ -2082,8 +2235,7 @@
         } else {
           const sig = s16 ? ascii(s16.subarray(0, 8)) : '(no sector 16)';
           let what = 'unknown filesystem';
-          if (s16 && ascii(s16.subarray(0, 5)) === 'BEA01') what = 'UDF (no ISO 9660 bridge)';
-          else if (s0 && s0[510] === 0x55 && s0[511] === 0xAA) what = 'bootable volume (FAT/NTFS/exFAT?)';
+          if (s0 && s0[510] === 0x55 && s0[511] === 0xAA) what = 'bootable volume (FAT/NTFS/exFAT?)';
           throw new Error('Unsupported filesystem inside AIF: ' + what + ' (signature "' + sig + '")');
         }
       } else {
@@ -2110,7 +2262,7 @@
       while (queue.length > 0) {
         if (gen !== parseGen) return;   // don't send a new request
         const node = queue.shift();
-        const data = await readData(url, node.lba, node.size);
+        const data = await readDataCached(url, node.lba, node.size);
         if (gen !== parseGen) return;   // finish the current request, then stop
         const entries = parseDirEntries(data, isJoliet, useRR);
         let subdirs = 0;
