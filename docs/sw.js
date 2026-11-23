@@ -2,7 +2,12 @@
 // Serves ISO/ZIP-internal files for HTML preview, so relative resources
 // (CSS/images/JS) load as if they were real files on the origin.
 
+// AIF container support (used only when a session carries aif === true).
+// Non-fatal if the files are missing — ISO/ZIP/HFS still work.
+try { importScripts('lzma1.bundle.js', 'aif.js'); } catch (e) {}
+
 const sessions = new Map();
+const aifReaders = new WeakMap(); // session object -> Promise<AIF reader>
 
 // Persist sessions so a terminated-and-revived worker doesn't lose them —
 // browsers kill idle service workers after a short timeout.
@@ -159,6 +164,7 @@ async function readFileData(session, f) {
   if (!f.inner) {
     if (session.archiveType === 'zip') return extractZip(session, f);
     if (session.archiveType === 'hfs') return readHfsFile(session, f);
+    if (session.aif) return readAifFile(session, f);
     return readIso(session, f);
   }
   const base = f.inner.containerLba * 2048;  // byte offset of the nested archive in the outer ISO
@@ -199,11 +205,45 @@ async function readHfsFile(session, f) {
     if (!e || !e.count || p >= size) break;
     const off = vol.baseOffset + vol.alBlSt * 512 + e.start * vol.blockSize;
     const want = Math.min(e.count * vol.blockSize, size - p);
-    const data = await fetchRange(session.url, off, want);
+    const data = session.aif ? await aifByteRead(session, off, want) : await fetchRange(session.url, off, want);
     out.set(data, p);
     p += data.length;
   }
   return out;
+}
+
+// Build (and cache per session) the AIF container reader. The AIF's DDT is
+// decompressed once and reused for every file read in this session.
+function getAifReader(session) {
+  if (!aifReaders.has(session)) {
+    aifReaders.set(session, self.AIF.open((start, length) => fetchRange(session.url, start, length)));
+  }
+  return aifReaders.get(session);
+}
+
+// Read a file whose sectors live inside an AIF container.
+async function readAifFile(session, f) {
+  const reader = await getAifReader(session);
+  const n = Math.ceil(f.size / 2048);
+  const out = new Uint8Array(n * 2048);
+  for (let i = 0; i < n; i++) {
+    const s = await reader.readSector(f.lba + i);
+    out.set(s ? s.subarray(0, 2048) : new Uint8Array(2048), i * 2048);
+  }
+  return out.subarray(0, f.size);
+}
+
+// Byte-offset read through the AIF reader (for HFS-in-AIF file data).
+async function aifByteRead(session, off, len) {
+  const reader = await getAifReader(session);
+  const first = Math.floor(off / 2048);
+  const n = Math.floor((off + len - 1) / 2048) - first + 1;
+  const out = new Uint8Array(n * 2048);
+  for (let i = 0; i < n; i++) {
+    const s = await reader.readSector(first + i);
+    out.set(s ? s.subarray(0, 2048) : new Uint8Array(2048), i * 2048);
+  }
+  return out.subarray(off - first * 2048, off - first * 2048 + len);
 }
 
 // ---- ISO directory fallback: re-walk only the un-parsed path on a miss ----

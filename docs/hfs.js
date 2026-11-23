@@ -182,6 +182,7 @@
 
     // Leaf records are sorted by (parentID, name), so same-parentID records are
     // contiguous. Group by parentID; within a group (a directory's direct children)
+    // yield directories first, then files, sorted by name.
     let groupParentID = -1;
     let group = [];
 

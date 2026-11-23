@@ -142,14 +142,14 @@
       <div class="modal-body">
         <div class="modal-row">
           <span>💿</span>
-          <input id="url" type="text" placeholder="Paste an ISO/BIN/MDF/ZIP link (requires Range support)">
+          <input id="url" type="text" placeholder="Paste an ISO/BIN/MDF/ZIP/AIF link (requires Range support)">
           <button id="paste" title="Paste">📋</button>
         </div>
         <div class="modal-row">
           <button id="openFile" title="Open local file">📂 Local file</button>
           <button id="parse">🔍 Browse</button>
         </div>
-        <input type="file" id="fileInput" accept=".iso,.bin,.mdf,.zip" class="hidden">
+        <input type="file" id="fileInput" accept=".iso,.bin,.mdf,.zip,.aif" class="hidden">
       </div>
     </div>
   </div>
@@ -226,6 +226,8 @@
   let rootLba = 0, rootSize = 0;           // ISO: root directory location (for SW fallback)
   let hfsVol = null;                       // HFS: volume metadata (from HFS.detect)
   let hfsPromise = null;                   // HFS: lazy-load promise for hfs.js
+  let aifReader = null;                    // AIF: container reader (from AIF.open); routes readData through it
+  let aifPromise = null;                   // AIF: lazy-load promise for aif.js (+ lzma1.bundle.js)
   let zipFiles = null;                     // ZIP: complete file map, ready before progressive render finishes
   let dirSize = null;                      // Map: dir path -> accumulated descendant size
   let nodeByPath = null;                   // Map: node path -> node
@@ -277,6 +279,27 @@
     return hfsPromise;
   }
 
+  // Lazy-load lzma1.bundle.js (LZMA codec) then aif.js (Aaru container reader).
+  const AIF_VERSION = 2;
+  function loadAif() {
+    if (!aifPromise) {
+      aifPromise = new Promise((resolve, reject) => {
+        const s1 = document.createElement('script');
+        s1.src = 'lzma1.bundle.js';
+        s1.onload = () => {
+          const s2 = document.createElement('script');
+          s2.src = 'aif.js?v=' + AIF_VERSION;
+          s2.onload = () => resolve(globalThis.AIF);
+          s2.onerror = () => reject(new Error('Failed to load aif.js'));
+          document.head.appendChild(s2);
+        };
+        s1.onerror = () => reject(new Error('Failed to load lzma1.bundle.js'));
+        document.head.appendChild(s1);
+      });
+    }
+    return aifPromise;
+  }
+
   // Detect archive format: ISO 9660 (2048/2352-byte sectors), ZIP, or Apple HFS
   async function detectFormat(url) {
     const probe = await readRange(url, 0, 65536);
@@ -285,11 +308,21 @@
     if (sig(16 * 2352 + 16 + 1)) return { type: 'iso', sectorSize: 2352, dataOffset: 16 };
     if (probe.length >= 2 && probe[0] === 0x50 && probe[1] === 0x4B) return { type: 'zip' };  // "PK"
     if (probe.length >= 514 && probe[512] === 0x50 && probe[513] === 0x4D) return { type: 'hfs' };  // "PM" Apple Partition Map
+    if (probe.length >= 8 && ascii(probe.subarray(0, 8)) === 'AARUFRMT') return { type: 'aif' };   // Aaru Image Format
     return null;
   }
 
   // Read size bytes of user data starting at logical sector lba (handles raw sector layout)
   async function readData(url, lba, size) {
+    if (aifReader) {
+      const n = Math.ceil(size / 2048);
+      const out = new Uint8Array(n * 2048);
+      for (let i = 0; i < n; i++) {
+        const s = await aifReader.readSector(lba + i);
+        out.set(s ? s.subarray(0, 2048) : new Uint8Array(2048), i * 2048);
+      }
+      return out.subarray(0, size);
+    }
     if (sectorSize === 2048) {
       return readRange(url, lba * 2048, size);
     }
@@ -301,6 +334,19 @@
       out.set(raw.subarray(s, s + 2048), i * 2048);
     }
     return out.subarray(0, size);
+  }
+
+  // Byte-offset read through the AIF sector reader (feeds the HFS parser when
+  // the filesystem inside an AIF container is HFS rather than ISO 9660).
+  async function aifByteRead(off, len) {
+    const first = Math.floor(off / 2048);
+    const n = Math.floor((off + len - 1) / 2048) - first + 1;
+    const out = new Uint8Array(n * 2048);
+    for (let i = 0; i < n; i++) {
+      const s = await aifReader.readSector(first + i);
+      out.set(s ? s.subarray(0, 2048) : new Uint8Array(2048), i * 2048);
+    }
+    return out.subarray(off - first * 2048, off - first * 2048 + len);
   }
 
   function u32(d, off) {
@@ -901,7 +947,10 @@
   async function readFileContent(node) {
     if (node.readFile) return await node.readFile();
     if (archiveType === 'zip') return await zipExtractFile(currentUrl, node);
-    if (archiveType === 'hfs') return await HFS.readFile((off, len) => readRange(currentUrl, off, len), hfsVol, node);
+    if (archiveType === 'hfs') {
+      const byteRead = aifReader ? aifByteRead : (off, len) => readRange(currentUrl, off, len);
+      return await HFS.readFile(byteRead, hfsVol, node);
+    }
     return await readData(currentUrl, node.lba, node.size);
   }
 
@@ -1428,7 +1477,7 @@
         channel.port1.onmessage = () => resolve();
         navigator.serviceWorker.controller.postMessage({
           type: 'set-session', sessionId,
-          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined }
+          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined }
         }, [channel.port2]);
       });
       // Load the HTML at its real archive-relative path so the browser resolves
@@ -1759,13 +1808,15 @@
       name.appendChild(span);
       node.dirSpan = span;
       node.treeNameEl = name;
-      const pack = document.createElement('span');
-      pack.className = 'preview-icon';
-      pack.title = 'Pack & download';
-      pack.textContent = '📦';
-      pack.addEventListener('click', () => packDir(node));
-      name.appendChild(pack);
-      node.treePackEl = pack;
+      if (!aifReader) {
+        const pack = document.createElement('span');
+        pack.className = 'preview-icon';
+        pack.title = 'Pack & download';
+        pack.textContent = '📦';
+        pack.addEventListener('click', () => packDir(node));
+        name.appendChild(pack);
+        node.treePackEl = pack;
+      }
       const spinner = document.createElement('span');
       spinner.className = 'loading-spinner hidden';
       spinner.innerHTML = '<span class="loading-ring"></span>';
@@ -1808,10 +1859,14 @@
     const name = document.createElement('span');
     name.className = 'tree-name';
     if (node.isDir) {
-      name.innerHTML = '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span><span class="preview-icon" title="Pack & download">📦</span>';
+      name.innerHTML = aifReader
+        ? '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span>'
+        : '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span><span class="preview-icon" title="Pack & download">📦</span>';
       node.flatNameEl = name;
-      name.querySelector('.preview-icon').addEventListener('click', () => packDir(node));
-      node.flatPackEl = name.querySelector('.preview-icon');
+      if (!aifReader) {
+        name.querySelector('.preview-icon').addEventListener('click', () => packDir(node));
+        node.flatPackEl = name.querySelector('.preview-icon');
+      }
       const spinner = document.createElement('span');
       spinner.className = 'loading-spinner hidden';
       spinner.innerHTML = '<span class="loading-ring"></span>';
@@ -1917,6 +1972,7 @@
 
     let dirCount = 0, fileCount = 0, totalBytes = 0;
     try {
+      aifReader = null;   // reset; a fresh AIF reader is created below when needed
       const fmt = await detectFormat(url);
       if (gen !== parseGen) return;
       if (!fmt) {
@@ -1927,20 +1983,12 @@
         await parseZip(url, gen);
         return;
       }
-      if (fmt.type === 'hfs') {
-        archiveType = 'hfs';
-        await loadHfs();
-        const hfsRead = (off, len) => readRange(url, off, len);
-        const vol = await HFS.detect(hfsRead);
-        if (gen !== parseGen) return;
-        if (!vol) throw new Error('Apple Partition Map found, but no HFS Master Directory Block ("BD")');
-        hfsVol = vol;
-        // Stream the catalog and mount entries incrementally (parents come first).
-        // dirStack tracks directories whose subtree is still loading; pop by CNID/subtreeEnd.
+      // Mount an HFS catalog into the tree (shared by raw-HFS and HFS-in-AIF).
+      async function mountHfs(hfsRead, vol) {
         let counter = 0;
         const dirStack = [];
         for await (const e of HFS.catalogEntries(hfsRead, vol)) {
-          if (gen !== parseGen) return;
+          if (gen !== parseGen) return false;
           const depth = e.path.split('/').filter(Boolean).length;
           const child = { name: e.name, path: e.path, isDir: e.isDir, size: e.size, depth, date: '' };
           if (!e.isDir) { child.extents = e.extents; child.type = e.type; child.dataSize = e.dataSize; }
@@ -1952,7 +2000,6 @@
             dirSize.set(child.path, 0);
             dirCount++;
             const pid = e.parentID, cid = e.cnid;
-            // Close every directory with subtreeEnd <= pid (its whole subtree is done).
             const remaining = [];
             for (const d of dirStack) {
               if (d.subtreeEnd <= pid) setDirLoading(d.node, false);
@@ -1960,12 +2007,9 @@
             }
             dirStack.length = 0;
             dirStack.push(...remaining);
-            // The most recent sibling with the same parentID: set its subtree end to this CNID.
             for (let i = dirStack.length - 1; i >= 0; i--) {
               if (dirStack[i].parentId === pid) { dirStack[i].subtreeEnd = cid; break; }
             }
-            // A new directory inherits its parent's subtreeEnd (if on the stack), else Infinity,
-            // so the last child ends when an ancestor's sibling appears, not only at stream end.
             let subtreeEnd = Infinity;
             for (let i = dirStack.length - 1; i >= 0; i--) {
               if (dirStack[i].cnid === pid) { subtreeEnd = dirStack[i].subtreeEnd; break; }
@@ -1982,13 +2026,10 @@
             await new Promise(r => setTimeout(r, 0));
           }
         }
-
+        if (gen !== parseGen) return false;
         mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol.volName);
         mainStatusEl.classList.remove('loading');
-        // After streaming, close the spinner on any directories left on the stack.
         while (dirStack.length) setDirLoading(dirStack.pop().node, false);
-
-        // Reorder allNodes into DFS order (for filtering), like the ISO branch.
         const ordered = [];
         (function walk(container) {
           for (const el of container.children) {
@@ -2001,11 +2042,55 @@
         })(treeRoot);
         allNodes = ordered;
         await applyFileDescriptions();
+        return true;
+      }
+      if (fmt.type === 'hfs') {
+        archiveType = 'hfs';
+        await loadHfs();
+        const hfsRead = (off, len) => readRange(url, off, len);
+        const vol = await HFS.detect(hfsRead);
+        if (gen !== parseGen) return;
+        if (!vol) throw new Error('Apple Partition Map found, but no HFS Master Directory Block ("BD")');
+        hfsVol = vol;
+        await mountHfs(hfsRead, vol);
         return;
       }
-      archiveType = 'iso';
-      sectorSize = fmt.sectorSize;
-      dataOffset = fmt.dataOffset;
+      if (fmt.type === 'aif') {
+        await loadAif();
+        aifReader = await AIF.open((start, length) => readRange(url, start, length));
+        if (gen !== parseGen) return;
+
+        // Probe the filesystem inside the container.
+        const s16 = await aifReader.readSector(16);
+        const s0 = await aifReader.readSector(0);
+        const isIso = s16 && ascii(s16.subarray(1, 6)) === 'CD001';
+        const isHfs = s0 && ((s0[512] === 0x50 && s0[513] === 0x4D) || (s0[1024] === 0x42 && s0[1025] === 0x44));
+
+        if (isIso) {
+          archiveType = 'iso';
+          sectorSize = 2048;
+          dataOffset = 0;
+        } else if (isHfs) {
+          archiveType = 'hfs';
+          await loadHfs();
+          const vol = await HFS.detect(aifByteRead);
+          if (gen !== parseGen) return;
+          if (!vol) throw new Error('HFS signature found in AIF, but no HFS Master Directory Block ("BD")');
+          hfsVol = vol;
+          await mountHfs(aifByteRead, vol);
+          return;
+        } else {
+          const sig = s16 ? ascii(s16.subarray(0, 8)) : '(no sector 16)';
+          let what = 'unknown filesystem';
+          if (s16 && ascii(s16.subarray(0, 5)) === 'BEA01') what = 'UDF (no ISO 9660 bridge)';
+          else if (s0 && s0[510] === 0x55 && s0[511] === 0xAA) what = 'bootable volume (FAT/NTFS/exFAT?)';
+          throw new Error('Unsupported filesystem inside AIF: ' + what + ' (signature "' + sig + '")');
+        }
+      } else {
+        archiveType = 'iso';
+        sectorSize = fmt.sectorSize;
+        dataOffset = fmt.dataOffset;
+      }
       const { pvd, svd } = await readVolumeDescriptors(url);
       if (gen !== parseGen) return;
       if (!pvd) {
