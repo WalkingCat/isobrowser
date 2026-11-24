@@ -211,10 +211,9 @@
           const parentID = u32(rec, 2);
           const name = pstr(rec.subarray(6, 6 + rec[6] + 1));
           const dataSize = Math.max(0, s32(rec, dataOff + 26));
-          const rsrcSize = Math.max(0, s32(rec, dataOff + 36));
           const extents = readExtents(rec, dataOff + 74);
           const ostype = macRoman(rec.subarray(dataOff + 4, dataOff + 8));
-          entry = { parentID, name, path: joinPath(resolvePath(parentID), name), isDir: false, size: dataSize + rsrcSize, dataSize, type: ostype, extents };
+          entry = { parentID, name, path: joinPath(resolvePath(parentID), name), isDir: false, size: dataSize, dataSize, type: ostype, extents };
         }
         // thread records (0x03, 0x04) carry no extra info we need.
         if (!entry) continue;
@@ -238,17 +237,16 @@
         if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
         return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
       });
-      for (const e of group) { delete e.parentID; yield e; }
+      for (const e of group) yield e;
     }
   }
 
-  // Read a file's data fork. Only handles ≤3 contiguous extents (no extents-overflow yet).
+  // Read a file's data fork only (the resource fork is Mac metadata, ignored here).
   async function readFile(read, vol, fileEntry) {
     const size = fileEntry.dataSize !== undefined ? fileEntry.dataSize : fileEntry.size;
-    const extents = fileEntry.extents;
     const out = new Uint8Array(size);
     let p = 0;
-    for (const e of extents) {
+    for (const e of fileEntry.extents) {
       if (!e.count || p >= size) break;
       const off = allocOffset(vol, e.start);
       const want = Math.min(e.count * vol.blockSize, size - p);

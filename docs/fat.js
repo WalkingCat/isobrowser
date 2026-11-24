@@ -181,12 +181,8 @@
     }
     const clusters = clusterChain(vol, dir.cluster);
     const parts = [];
-    let remaining = dir.size;
     for (const c of clusters) {
-      if (remaining <= 0) break;
-      const want = Math.min(vol.bpb.sectorsPerCluster * vol.bpb.bytesPerSector, remaining);
-      parts.push(await read(sectorOf(vol, c) * vol.bpb.bytesPerSector, want));
-      remaining -= want;
+      parts.push(await read(sectorOf(vol, c) * vol.bpb.bytesPerSector, vol.bpb.sectorsPerCluster * vol.bpb.bytesPerSector));
     }
     return concat(parts);
   }
@@ -195,6 +191,17 @@
   async function readDir(read, vol, dir) {
     const data = await readDirData(read, vol, dir);
     return parseDirEntries(data);
+  }
+
+  // Read the FAT volume label (the root-directory entry with attribute 0x08).
+  async function volumeLabel(read, vol) {
+    const data = await readDirData(read, vol, { isRoot: true });
+    for (let p = 0; p + 32 <= data.length; p += 32) {
+      const first = data[p];
+      if (first === 0x00 || first === 0xE5) continue;
+      if (data[p + 11] & 0x08) return readShortName(data, p);
+    }
+    return '';
   }
 
   async function* catalogEntries(read, vol) {
@@ -232,6 +239,7 @@
     detectBoot: detectBoot,
     parseVolume: parseVolume,
     readDir: readDir,
+    volumeLabel: volumeLabel,
     catalogEntries: catalogEntries,
     readFile: readFile
   };

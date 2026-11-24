@@ -4,7 +4,7 @@
 
 // AIF container support (used only when a session carries aif === true).
 // Non-fatal if the files are missing — ISO/ZIP/HFS still work.
-try { importScripts('lzma1.bundle.js', 'aif.js', 'udf.js'); } catch (e) {}
+try { importScripts('lzma1.bundle.js?v=1', 'aif.js?v=2', 'udf.js?v=1'); } catch (e) {}
 
 const sessions = new Map();
 const aifReaders = new WeakMap(); // session object -> Promise<AIF reader>
@@ -162,6 +162,7 @@ async function readOuterBytes(session, byteOffset, len) {
 // Recursively read a file's bytes (supports outer ISO -> nested archive -> file)
 async function readFileData(session, f) {
   if (!f.inner) {
+    if (f.fs === 'hfs') return readHfsFile(session, f);
     if (session.archiveType === 'zip') return extractZip(session, f);
     if (session.archiveType === 'hfs') return readHfsFile(session, f);
     if (session.archiveType === 'udf') return readUdfFile(session, f);

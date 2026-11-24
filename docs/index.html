@@ -41,8 +41,6 @@
   .view-header, .tree-row { display: flex; align-items: center; gap: 8px; font-family: ui-monospace, Consolas, monospace; font-size: 14px; }
   .view-header { position: sticky; top: 0; background: Canvas; font-weight: 600; border-bottom: 1px solid #e0e0e0; padding: 2px 0; z-index: 1; }
   .tree-row { border-bottom: 1px solid #e0e0e0; }
-  .list > .tree-row:nth-child(even), .inner-list > .tree-row:nth-child(even) { background: rgba(0, 0, 0, 0.03); }
-  .tree-row.depth-odd { background: rgba(0, 0, 0, 0.03); }
   .tree-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
   .tree-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .grid-table { display: grid; grid-template-columns: minmax(max-content, 1fr) 80px 140px; column-gap: 0px; width: max-content; min-width: 100%; }
@@ -56,8 +54,12 @@
   .grid-table .tree-date { display: flex; align-items: center; }
   .grid-table .view-header .tree-name { position: sticky; top: 0; background: Canvas; font-weight: 600; z-index: 1; padding-top: 2px; padding-bottom: 2px; }
   .grid-table .view-header .tree-size, .grid-table .view-header .tree-date { top: 0; font-weight: 600; z-index: 1; padding-top: 2px; padding-bottom: 2px; }
-  .grid-table.tree-view .tree-row.depth-odd .tree-name { background: rgba(0, 0, 0, 0.03); }
-  .grid-table.flat-view .list > .tree-row:nth-child(even) .tree-name { background: rgba(0, 0, 0, 0.03); }
+  .tree-row:hover { background: rgba(0, 0, 0, 0.07) !important; }
+  .grid-table .tree-row:hover .tree-name,
+  .grid-table .tree-row:hover .tree-size,
+  .grid-table .tree-row:hover .tree-date,
+  .grid-table .tree-row:hover .preview-icon,
+  .grid-table .tree-row:hover .loading-spinner { background: rgba(0, 0, 0, 0.07) !important; }
   .loading-spinner { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex-shrink: 0; margin-left: 6px; background: Canvas; }
   .grid-table .loading-spinner { position: sticky; right: 220px; }
   .loading-ring { width: 12px; height: 12px; box-sizing: border-box; border: 2px solid rgba(128,128,128,0.35); border-top-color: #0078d4; border-radius: 50%; animation: isospin 0.8s linear infinite; }
@@ -109,8 +111,12 @@
     .nav-status, .preview-status { color: #a0a8b4; }
     .view-header, .tree-row, .controls, .preview-head, .nav-head,
     .grid-table .tree-name, .grid-table .tree-size, .grid-table .tree-date { border-bottom-color: #333; }
-    .list > .tree-row:nth-child(even), .inner-list > .tree-row:nth-child(even) { background: rgba(255, 255, 255, 0.04); }
-    .tree-row.depth-odd { background: rgba(255, 255, 255, 0.04); }
+    .tree-row:hover { background: rgba(255, 255, 255, 0.07) !important; }
+    .grid-table .tree-row:hover .tree-name,
+    .grid-table .tree-row:hover .tree-size,
+    .grid-table .tree-row:hover .tree-date,
+    .grid-table .tree-row:hover .preview-icon,
+    .grid-table .tree-row:hover .loading-spinner { background: rgba(255, 255, 255, 0.07) !important; }
     .tree-date, .tree-size { color: #c6ceda; }
     .file-desc { color: #9aa4b2; }
     a { color: #6cb6ff; }
@@ -270,7 +276,7 @@
 
   // Lazy-load hfs.js (classic Mac HFS support) on first use.
   // Bump this version after editing hfs.js to force browsers to fetch the new file.
-  const HFS_VERSION = 1;
+  const HFS_VERSION = 3;
   function loadHfs() {
     if (!hfsPromise) {
       hfsPromise = new Promise((resolve, reject) => {
@@ -286,11 +292,12 @@
 
   // Lazy-load lzma1.bundle.js (LZMA codec) then aif.js (Aaru container reader).
   const AIF_VERSION = 2;
+  const LZMA_VERSION = 1;
   function loadAif() {
     if (!aifPromise) {
       aifPromise = new Promise((resolve, reject) => {
         const s1 = document.createElement('script');
-        s1.src = 'lzma1.bundle.js';
+        s1.src = 'lzma1.bundle.js?v=' + LZMA_VERSION;
         s1.onload = () => {
           const s2 = document.createElement('script');
           s2.src = 'aif.js?v=' + AIF_VERSION;
@@ -320,7 +327,7 @@
     return udfPromise;
   }
 
-  const FAT_VERSION = 1;
+  const FAT_VERSION = 2;
   function loadFat() {
     if (!fatPromise) {
       fatPromise = new Promise((resolve, reject) => {
@@ -360,7 +367,10 @@
       const anchor = await readRange(url, 256 * 2048, 8);
       if (anchor.length >= 2 && anchor[0] === 0x02 && anchor[1] === 0x00) return { type: 'udf' };
     } catch (e) {}
-    if (sig(16 * 2048 + 1)) return { type: 'iso', sectorSize: 2048, dataOffset: 0 };
+    if (sig(16 * 2048 + 1)) {
+      const hybridHfs = probe.length >= 514 && probe[512] === 0x50 && probe[513] === 0x4D;
+      return { type: 'iso', sectorSize: 2048, dataOffset: 0, hybridHfs };
+    }
     if (sig(16 * 2352 + 16 + 1)) return { type: 'iso', sectorSize: 2352, dataOffset: 16 };
     if (probe.length >= 2 && probe[0] === 0x50 && probe[1] === 0x4B) return { type: 'zip' };  // "PK"
     if (probe.length >= 514 && probe[512] === 0x50 && probe[513] === 0x4D) return { type: 'hfs' };  // "PM" Apple Partition Map
@@ -394,7 +404,7 @@
   // Read-ahead cache for the ISO directory BFS: directories are small and often
   // contiguous, so read one 256 KiB aligned block and serve nearby reads from it.
   const isoReadCache = new Map();   // blockStart -> Uint8Array
-  const ISO_CACHE_BLOCK = 256 * 1024;
+  const ISO_CACHE_BLOCK = 32 * 1024;
   const ISO_CACHE_MAX = 32;         // max cached blocks (8 MiB)
 
   async function readDataCached(url, lba, size) {
@@ -729,7 +739,10 @@
 
   function fileLink(path) {
     if (path === '/') return currentUrl;
-    const segs = path.split('/').filter(s => s !== '');
+    let p = path;
+    if (p.startsWith('/iso/')) p = p.slice(4);      // strip hybrid virtual-root prefix
+    else if (p.startsWith('/hfs/')) p = p.slice(4);
+    const segs = p.split('/').filter(s => s !== '');
     return currentUrl + '/' + segs.map(encodeURIComponent).join('/');
   }
 
@@ -1055,16 +1068,17 @@
   // Read a file's decompressed bytes (works for ISO, ZIP, HFS, and nested archives)
   async function readFileContent(node) {
     if (node.readFile) return await node.readFile();
-    if (archiveType === 'zip') return await zipExtractFile(currentUrl, node);
-    if (archiveType === 'hfs') {
+    const fs = node.fs || archiveType;
+    if (fs === 'zip') return await zipExtractFile(currentUrl, node);
+    if (fs === 'hfs') {
       const byteRead = aifReader ? aifByteRead : (off, len) => readRange(currentUrl, off, len);
       return await HFS.readFile(byteRead, hfsVol, node);
     }
-    if (archiveType === 'udf') {
+    if (fs === 'udf') {
       const byteRead = aifReader ? aifByteRead : (off, len) => readRange(currentUrl, off, len);
       return await UDF.readFile(byteRead, udfVol, node);
     }
-    if (archiveType === 'fat') {
+    if (fs === 'fat') {
       return await FAT.readFile((off, len) => readRange(currentUrl, off, len), fatVol, node);
     }
     return await readData(currentUrl, node.lba, node.size);
@@ -1270,6 +1284,7 @@
     const ext = name.slice(i + 1).toLowerCase();
     if (['zip'].includes(ext)) return 'zip';
     if (['iso', 'bin', 'mdf'].includes(ext)) return 'iso';
+    if (['img', 'ima'].includes(ext)) return 'img';
     return null;
   }
 
@@ -1383,6 +1398,30 @@
     }
   }
 
+  // Parse a nested raw image (.img/.ima): detect FAT (floppy) vs ISO (optical).
+  async function parseInnerImg(read, size, onNode, container, onDirRead) {
+    await loadFat();
+    const boot = await read(0, 512);
+    const bpb = FAT.detectBoot(boot);
+    if (bpb) {
+      const vol = await FAT.parseVolume(read, bpb);
+      const label = await FAT.volumeLabel(read, vol);
+      container.vol = label;
+      container.type = 'fat';
+      for await (const e of FAT.catalogEntries(read, vol)) {
+        const depth = e.path.split('/').filter(Boolean).length - 1;
+        const child = { name: e.name, path: e.path, isDir: e.isDir, size: e.size, depth };
+        if (!e.isDir) {
+          child.cluster = e.cluster;
+          child.readFile = () => FAT.readFile(read, vol, child);
+        }
+        onNode(child);
+      }
+      return;
+    }
+    await parseInnerIso(read, size, onNode, container, onDirRead);
+  }
+
   // Parse a ZIP archive: read the central directory, build the tree, and render it
   async function parseZip(url, gen) {
     const { cdOffset, cdSize } = await readZipEOCD(url);
@@ -1464,7 +1503,9 @@
   // File types the browser can display natively (image / video / audio)
   function previewType(name) {
     const i = name.lastIndexOf('.');
-    if (i <= 0 || i === name.length - 1) return null;
+    const stem = (i > 0 ? name.slice(0, i) : name).toLowerCase();
+    const readmeLike = /^(readme|read|install|copying|license|notice|notes)\b/.test(stem);
+    if (i <= 0 || i === name.length - 1) return readmeLike ? 'text' : null;
     const ext = name.slice(i + 1).toLowerCase();
     if (['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif'].includes(ext)) return 'image';
     if (['mp4','webm','ogv','mov','m4v','mkv'].includes(ext)) return 'video';
@@ -1473,15 +1514,15 @@
     if (['pdf'].includes(ext)) return 'pdf';
     if (['txt','inf','ini','cfg','conf','log','bbs','diz','nfo','md','xml','xsl','xslt','json','yml','yaml','toml','csv','tsv','css','js','jsx','ts','tsx','bat','cmd','sh','ps1','py','rb','pl','php','c','h','cpp','hpp','cs','java','go','rs','sql','diff','patch','map'].includes(ext)) return 'text';
     if (['mht','mhtml'].includes(ext)) return 'mht';
-    if (['zip','iso','bin','mdf'].includes(ext)) return 'archive';
-    return null;
+    if (['zip','iso','bin','mdf','img','ima'].includes(ext)) return 'archive';
+    return readmeLike ? 'text' : null;
   }
 
   // Map a classic-Mac OSType to a browser-previewable category (null if unknown).
   function hfsPreviewType(type) {
     switch (type) {
       case 'TEXT': case 'ttro': return 'text';
-      case 'GIFf': case 'JPEG': case 'PICT': case 'PNGf': case 'TIFF': case 'BMPf': case '8BPS': return 'image';
+      case 'GIFf': case 'JPEG': case 'PNGf': case 'BMPf': return 'image';
       case 'MooV': case 'MPG ': case 'MPEG': return 'video';
       case 'AIFF': case 'snd ': case 'MP3 ': case 'sfil': case 'WAVE': return 'audio';
       case 'PDF ': return 'pdf';
@@ -1589,8 +1630,10 @@
       } else {
         dirs[''] = { lba: rootLba, size: rootSize };
         for (const n of allNodes) {
+          if (n.virtual) continue;
           const key = n.path.slice(1).toLowerCase();
           if (n.isDir) dirs[key] = { lba: n.lba, size: n.size };
+          else if (n.fs === 'hfs') files[key] = { fs: 'hfs', extents: n.extents, dataSize: n.dataSize, size: n.size };
           else files[key] = { lba: n.lba, size: n.size };
         }
       }
@@ -1599,7 +1642,7 @@
         channel.port1.onmessage = () => resolve();
         navigator.serviceWorker.controller.postMessage({
           type: 'set-session', sessionId,
-          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined, udfVol: archiveType === 'udf' ? { blockSize: udfVol.blockSize, partitionStart: udfVol.partitionStart } : undefined, fatVol: archiveType === 'fat' ? { bpb: fatVol.bpb, fat: fatVol.fat } : undefined }
+          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: hfsVol ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined, udfVol: archiveType === 'udf' ? { blockSize: udfVol.blockSize, partitionStart: udfVol.partitionStart } : undefined, fatVol: archiveType === 'fat' ? { bpb: fatVol.bpb, fat: fatVol.fat } : undefined }
         }, [channel.port2]);
       });
       // Load the HTML at its real archive-relative path so the browser resolves
@@ -1739,7 +1782,12 @@
     btnFlat.addEventListener('click', () => { filterEl.value = ''; setMode(false); });
     filterEl.addEventListener('input', applyFilter);
 
-    const read = (offset, length) => readFileBytes(currentUrl, node.lba, offset, length);
+    let fileCache = null;
+    const read = async (offset, length) => {
+      if (node.lba != null) return readFileBytes(currentUrl, node.lba, offset, length);
+      if (!fileCache) fileCache = await readFileContent(node);
+      return fileCache.subarray(offset, offset + length);
+    };
     const fmt = isArchiveName(node.name);
     const container = { lba: node.lba, size: node.size, type: fmt, sectorSize: 2048, dataOffset: 0, isJoliet: false };
     const innerNodes = [];
@@ -1775,6 +1823,7 @@
     (async () => {
       try {
         if (fmt === 'zip') await parseInnerZip(read, node.size, onNode, container);
+        else if (fmt === 'img') await parseInnerImg(read, node.size, onNode, container, onDirRead);
         else await parseInnerIso(read, node.size, onNode, container, onDirRead);
         loading = false;
         updateStatus();
@@ -1917,7 +1966,7 @@
     const nodeEl = document.createElement('div');
     nodeEl.className = 'tree-node';
     const row = document.createElement('div');
-    row.className = depth % 2 ? 'tree-row depth-odd' : 'tree-row';
+    row.className = 'tree-row';
     const name = document.createElement('span');
     name.className = 'tree-name';
     name.style.setProperty('--level', depth);
@@ -2101,13 +2150,15 @@
         return;
       }
       // Mount an HFS catalog into the tree (shared by raw-HFS and HFS-in-AIF).
-      async function mountHfs(hfsRead, vol) {
+      async function mountHfs(hfsRead, vol, prefix, finalize) {
+        prefix = prefix || '';
+        if (finalize === undefined) finalize = true;
         let counter = 0;
         const dirStack = [];
         for await (const e of HFS.catalogEntries(hfsRead, vol)) {
           if (gen !== parseGen) return false;
           const depth = e.path.split('/').filter(Boolean).length;
-          const child = { name: e.name, path: e.path, isDir: e.isDir, size: e.size, depth, date: '' };
+          const child = { name: e.name, path: prefix + e.path, isDir: e.isDir, size: e.size, depth, date: '', fs: 'hfs' };
           if (!e.isDir) { child.extents = e.extents; child.type = e.type; child.dataSize = e.dataSize; }
           allNodes.push(child);
           nodeByPath.set(child.path, child);
@@ -2145,7 +2196,7 @@
         }
         if (gen !== parseGen) return false;
         mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol.volName);
-        mainStatusEl.classList.remove('loading');
+        if (finalize) mainStatusEl.classList.remove('loading');
         while (dirStack.length) setDirLoading(dirStack.pop().node, false);
         const ordered = [];
         (function walk(container) {
@@ -2217,6 +2268,8 @@
       }
       // Mount a FAT catalog into the tree (BFS, sorted entries, post-order completion).
       async function mountFat(read, vol) {
+        const label = await FAT.volumeLabel(read, vol);
+        const volName = label;
         const queue = [{ dir: { isRoot: true }, path: '', depth: 0 }];
         const pending = new Map();
         const lookup = (p) => nodeByPath.get(p);
@@ -2248,12 +2301,12 @@
           }
           pending.set(dir.path, subdirs);
           if (subdirs === 0) completeDir(pending, lookup, dir.path);
-          mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, 'FAT');
+          mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, volName);
           mainStatusEl.classList.add('loading');
           await new Promise(r => setTimeout(r, 0));
         }
         if (gen !== parseGen) return false;
-        mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, 'FAT');
+        mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, volName);
         mainStatusEl.classList.remove('loading');
         const ordered = [];
         (function walk(container) {
@@ -2357,6 +2410,44 @@
         sectorSize = fmt.sectorSize;
         dataOffset = fmt.dataOffset;
       }
+      const hybridHfs = fmt.type === 'iso' && fmt.hybridHfs;
+      const isoPrefix = hybridHfs ? '/iso' : '';
+      const isoRootDepth = hybridHfs ? 1 : 0;
+      if (hybridHfs) {
+        const isoRoot = { name: '(ISO)', path: '/iso', isDir: true, size: 0, depth: 0, date: '', virtual: true, fs: 'iso' };
+        const hfsRoot = { name: '(HFS)', path: '/hfs', isDir: true, size: 0, depth: 0, date: '', virtual: true, fs: 'hfs' };
+        allNodes.push(isoRoot, hfsRoot);
+        nodeByPath.set('/iso', isoRoot);
+        nodeByPath.set('/hfs', hfsRoot);
+        appendTreeNode(isoRoot, 0, childBoxes, treeRoot);
+        appendTreeNode(hfsRoot, 0, childBoxes, treeRoot);
+        appendFlatProgressive(isoRoot, flatList, lastChild);
+        appendFlatProgressive(hfsRoot, flatList, lastChild);
+        dirSize.set('/iso', 0);
+        dirSize.set('/hfs', 0);
+        setDirLoading(isoRoot, true);
+        setDirLoading(hfsRoot, true);
+      }
+      // Start the HFS mount now (async) so it interleaves with the ISO BFS below
+      // instead of waiting until ISO finishes.
+      let hfsMountPromise = Promise.resolve();
+      if (hybridHfs) {
+        await loadHfs();
+        const hfsRead = (off, len) => {
+          if (detectProbe && off + len <= detectProbe.length) return Promise.resolve(detectProbe.subarray(off, off + len));
+          return readRange(url, off, len);
+        };
+        const hfsHyb = await HFS.detect(hfsRead);
+        if (gen !== parseGen) return;
+        if (hfsHyb) {
+          hfsVol = hfsHyb;
+          hfsMountPromise = mountHfs(hfsRead, hfsHyb, '/hfs', false).then((ok) => {
+            const hfsRootNode = nodeByPath.get('/hfs');
+            if (hfsRootNode) setDirLoading(hfsRootNode, false);
+            return ok;
+          });
+        }
+      }
       const { pvd, svd } = await readVolumeDescriptors(url);
       if (gen !== parseGen) return;
       if (!pvd) {
@@ -2370,7 +2461,7 @@
       const useRR = !isJoliet; // Joliet names are already long enough; otherwise fall back to Rock Ridge
 
       // Breadth-first read; display is mounted into parent/child nesting by appendTreeNode
-      const queue = [{ lba: rootLba, size: rootSize, path: '', depth: 0 }];
+      const queue = [{ lba: rootLba, size: rootSize, path: isoPrefix, depth: isoRootDepth }];
       const pending = new Map();
       const lookup = (p) => nodeByPath.get(p);
       while (queue.length > 0) {
@@ -2395,6 +2486,10 @@
         mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol);
         await new Promise(r => setTimeout(r, 0));
       }
+      if (hybridHfs) {
+        const isoRootNode = nodeByPath.get('/iso');
+        if (isoRootNode) setDirLoading(isoRootNode, false);
+      }
 
       // Reorder allNodes into depth-first order for filtering (flat list is already inserted progressively)
       const ordered = [];
@@ -2409,6 +2504,8 @@
       })(treeRoot);
       allNodes = ordered;
       await applyFileDescriptions();
+
+      await hfsMountPromise;
 
       mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, vol);
       mainStatusEl.classList.remove('loading');
@@ -2532,7 +2629,7 @@
 
   // Register the Service Worker for HTML preview (needs HTTPS or localhost)
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js?v=2').catch(() => {});
   }
 })();
 </script>
