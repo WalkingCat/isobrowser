@@ -141,6 +141,19 @@
     return s;
   }
 
+  // Decode a DOS date+time (directory-entry offsets 22-25) to "YYYY-MM-DD HH:MM".
+  function readDate(data, p) {
+    const time = u16(data, p + 22);
+    const date = u16(data, p + 24);
+    if (date === 0) return '';
+    const year = 1980 + (date >> 9);
+    const month = (date >> 5) & 0x0F;
+    const day = date & 0x1F;
+    const hour = (time >> 11) & 0x1F;
+    const minute = (time >> 5) & 0x3F;
+    return String(year).padStart(4, '0') + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0') + ' ' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+  }
+
   function parseDirEntries(data) {
     const entries = [];
     let lfn = '';
@@ -162,7 +175,8 @@
         name: name,
         isDir: (attr & 0x10) !== 0,
         cluster: u16(data, p + 26),
-        size: u32(data, p + 28)
+        size: u32(data, p + 28),
+        date: readDate(data, p)
       });
     }
     entries.sort((a, b) => {
@@ -212,10 +226,10 @@
       for (const e of parseDirEntries(data)) {
         const p = path === '' ? '/' + e.name : path + '/' + e.name;
         if (e.isDir) {
-          yield { name: e.name, path: p, isDir: true, size: 0, cluster: e.cluster };
+          yield { name: e.name, path: p, isDir: true, size: 0, cluster: e.cluster, date: e.date };
           queue.push({ dir: { cluster: e.cluster, size: e.size }, path: p });
         } else {
-          yield { name: e.name, path: p, isDir: false, size: e.size, cluster: e.cluster };
+          yield { name: e.name, path: p, isDir: false, size: e.size, cluster: e.cluster, date: e.date };
         }
       }
     }

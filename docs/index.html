@@ -327,7 +327,7 @@
     return udfPromise;
   }
 
-  const FAT_VERSION = 2;
+  const FAT_VERSION = 3;
   function loadFat() {
     if (!fatPromise) {
       fatPromise = new Promise((resolve, reject) => {
@@ -1410,7 +1410,7 @@
       container.type = 'fat';
       for await (const e of FAT.catalogEntries(read, vol)) {
         const depth = e.path.split('/').filter(Boolean).length - 1;
-        const child = { name: e.name, path: e.path, isDir: e.isDir, size: e.size, depth };
+        const child = { name: e.name, path: e.path, isDir: e.isDir, size: e.size, depth, date: e.date };
         if (!e.isDir) {
           child.cluster = e.cluster;
           child.readFile = () => FAT.readFile(read, vol, child);
@@ -2281,7 +2281,7 @@
           let subdirs = 0;
           for (const e of entries) {
             const path = dir.path === '' ? '/' + e.name : dir.path + '/' + e.name;
-            const child = { name: e.name, path, isDir: e.isDir, size: e.size, depth: dir.depth + 1, date: '' };
+            const child = { name: e.name, path, isDir: e.isDir, size: e.size, depth: dir.depth + 1, date: e.date || '' };
             if (!e.isDir) child.cluster = e.cluster;
             allNodes.push(child);
             nodeByPath.set(child.path, child);
