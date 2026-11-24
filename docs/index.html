@@ -614,7 +614,12 @@
 
   // Read volume descriptors (from sector 16), return {pvd, svd}
   async function readVolumeDescriptors(url) {
-    const block = await readData(url, 16, 32768);
+    let block;
+    if (!aifReader && sectorSize === 2048 && detectProbe && detectProbe.length >= 65536) {
+      block = detectProbe.subarray(32768, 65536); // sectors 16-31 already in the probe
+    } else {
+      block = await readData(url, 16, 32768);
+    }
     let pvd = null, svd = null;
     for (let i = 0; i + 2048 <= block.length; i += 2048) {
       const data = block.subarray(i, i + 2048);
@@ -2192,7 +2197,10 @@
       if (fmt.type === 'hfs') {
         archiveType = 'hfs';
         await loadHfs();
-        const hfsRead = (off, len) => readRange(url, off, len);
+        const hfsRead = (off, len) => {
+          if (detectProbe && off + len <= detectProbe.length) return Promise.resolve(detectProbe.subarray(off, off + len));
+          return readRange(url, off, len);
+        };
         const vol = await HFS.detect(hfsRead);
         if (gen !== parseGen) return;
         if (!vol) throw new Error('Apple Partition Map found, but no HFS Master Directory Block ("BD")');
