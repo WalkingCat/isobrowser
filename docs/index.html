@@ -1892,15 +1892,13 @@
       name.appendChild(span);
       node.dirSpan = span;
       node.treeNameEl = name;
-      if (!aifReader) {
-        const pack = document.createElement('span');
-        pack.className = 'preview-icon';
-        pack.title = 'Pack & download';
-        pack.textContent = '📦';
-        pack.addEventListener('click', () => packDir(node));
-        name.appendChild(pack);
-        node.treePackEl = pack;
-      }
+      const pack = document.createElement('span');
+      pack.className = 'preview-icon';
+      pack.title = 'Pack & download';
+      pack.textContent = '📦';
+      pack.addEventListener('click', () => packDir(node));
+      name.appendChild(pack);
+      node.treePackEl = pack;
       const spinner = document.createElement('span');
       spinner.className = 'loading-spinner hidden';
       spinner.innerHTML = '<span class="loading-ring"></span>';
@@ -1943,14 +1941,10 @@
     const name = document.createElement('span');
     name.className = 'tree-name';
     if (node.isDir) {
-      name.innerHTML = aifReader
-        ? '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span>'
-        : '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span><span class="preview-icon" title="Pack & download">📦</span>';
+      name.innerHTML = '<span class="tree-main" title="' + esc(node.path) + '">📁 <span>' + esc(node.path) + '</span></span><span class="preview-icon" title="Pack & download">📦</span>';
       node.flatNameEl = name;
-      if (!aifReader) {
-        name.querySelector('.preview-icon').addEventListener('click', () => packDir(node));
-        node.flatPackEl = name.querySelector('.preview-icon');
-      }
+      name.querySelector('.preview-icon').addEventListener('click', () => packDir(node));
+      node.flatPackEl = name.querySelector('.preview-icon');
       const spinner = document.createElement('span');
       spinner.className = 'loading-spinner hidden';
       spinner.innerHTML = '<span class="loading-ring"></span>';
