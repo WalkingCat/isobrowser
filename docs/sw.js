@@ -165,6 +165,7 @@ async function readFileData(session, f) {
     if (session.archiveType === 'zip') return extractZip(session, f);
     if (session.archiveType === 'hfs') return readHfsFile(session, f);
     if (session.archiveType === 'udf') return readUdfFile(session, f);
+    if (session.archiveType === 'fat') return readFatFile(session, f);
     if (session.aif) return readAifFile(session, f);
     return readIso(session, f);
   }
@@ -259,6 +260,28 @@ async function readUdfFile(session, f) {
     const data = session.aif ? await aifByteRead(session, absOff, want) : await fetchRange(session.url, absOff, want);
     out.set(data, off);
     off += data.length;
+  }
+  return out;
+}
+
+// Read a FAT file by following its cluster chain.
+async function readFatFile(session, f) {
+  const bpb = session.fatVol.bpb;
+  const fat = session.fatVol.fat;
+  const fatOf = bpb.fatType === 12
+    ? (c) => { const o = Math.floor(c * 3 / 2); const v = fat[o] | (fat[o + 1] << 8); return (c & 1) ? (v >>> 4) : (v & 0x0FFF); }
+    : (c) => { const o = c * 2; return fat[o] | (fat[o + 1] << 8); };
+  const out = new Uint8Array(f.size);
+  let off = 0;
+  let c = f.cluster;
+  while (c >= 2 && c < 0xFF0) {
+    if (off >= f.size) break;
+    const want = Math.min(bpb.sectorsPerCluster * bpb.bytesPerSector, f.size - off);
+    const sector = bpb.firstDataSector + (c - 2) * bpb.sectorsPerCluster;
+    const data = await fetchRange(session.url, sector * bpb.bytesPerSector, want);
+    out.set(data, off);
+    off += data.length;
+    c = fatOf(c);
   }
   return out;
 }

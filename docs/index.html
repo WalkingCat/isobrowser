@@ -231,6 +231,8 @@
   let aifPromise = null;                   // AIF: lazy-load promise for aif.js (+ lzma1.bundle.js)
   let udfVol = null;                       // UDF: volume metadata (from UDF.detect)
   let udfPromise = null;                   // UDF: lazy-load promise for udf.js
+  let fatVol = null;                       // FAT: volume handle (from FAT.parseVolume)
+  let fatPromise = null;                   // FAT: lazy-load promise for fat.js
   let zipFiles = null;                     // ZIP: complete file map, ready before progressive render finishes
   let dirSize = null;                      // Map: dir path -> accumulated descendant size
   let nodeByPath = null;                   // Map: node path -> node
@@ -318,6 +320,20 @@
     return udfPromise;
   }
 
+  const FAT_VERSION = 1;
+  function loadFat() {
+    if (!fatPromise) {
+      fatPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'fat.js?v=' + FAT_VERSION;
+        s.onload = () => resolve(globalThis.FAT);
+        s.onerror = () => reject(new Error('Failed to load fat.js'));
+        document.head.appendChild(s);
+      });
+    }
+    return fatPromise;
+  }
+
   // Detect archive format: ISO 9660 (2048/2352-byte sectors), ZIP, or Apple HFS
   async function detectFormat(url) {
     const probe = await readRange(url, 0, 65536);
@@ -326,6 +342,19 @@
     // AIF (Aaru Image Format) is detected from the probe; check it before the
     // UDF anchor read so AIF files don't pay for that extra 8-byte request.
     if (probe.length >= 8 && ascii(probe.subarray(0, 8)) === 'AARUFRMT') return { type: 'aif' };
+    // FAT boot sector (raw floppy/disk image) — quick BPB check
+    if (probe.length >= 512 && probe[510] === 0x55 && probe[511] === 0xAA) {
+      const bps = probe[11] | (probe[12] << 8);
+      const spc = probe[13];
+      const reserved = probe[14] | (probe[15] << 8);
+      const numFats = probe[16];
+      const rootEnts = probe[17] | (probe[18] << 8);
+      if ((bps === 512 || bps === 1024 || bps === 2048 || bps === 4096) &&
+          spc && !(spc & (spc - 1)) && reserved >= 1 &&
+          (numFats === 1 || numFats === 2) && rootEnts > 0) {
+        return { type: 'fat' };
+      }
+    }
     // UDF first: ISO/UDF bridge discs carry both an ISO PVD and a UDF anchor; prefer UDF for full names.
     try {
       const anchor = await readRange(url, 256 * 2048, 8);
@@ -1035,6 +1064,9 @@
       const byteRead = aifReader ? aifByteRead : (off, len) => readRange(currentUrl, off, len);
       return await UDF.readFile(byteRead, udfVol, node);
     }
+    if (archiveType === 'fat') {
+      return await FAT.readFile((off, len) => readRange(currentUrl, off, len), fatVol, node);
+    }
     return await readData(currentUrl, node.lba, node.size);
   }
 
@@ -1548,6 +1580,12 @@
           if (n.isDir) continue;
           files[key] = { extents: n.extents, dataSize: n.dataSize, size: n.size };
         }
+      } else if (archiveType === 'fat') {
+        for (const n of allNodes) {
+          if (n.isDir) continue;
+          const key = n.path.slice(1).toLowerCase();
+          files[key] = { cluster: n.cluster, size: n.size };
+        }
       } else {
         dirs[''] = { lba: rootLba, size: rootSize };
         for (const n of allNodes) {
@@ -1561,7 +1599,7 @@
         channel.port1.onmessage = () => resolve();
         navigator.serviceWorker.controller.postMessage({
           type: 'set-session', sessionId,
-          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined, udfVol: archiveType === 'udf' ? { blockSize: udfVol.blockSize, partitionStart: udfVol.partitionStart } : undefined }
+          session: { url: currentHandle || currentFile || currentUrl, archiveType, sectorSize, dataOffset, entry, files, dirs, isJoliet, html: htmlText, aif: !!aifReader, hfsVol: archiveType === 'hfs' ? { baseOffset: hfsVol.baseOffset, alBlSt: hfsVol.alBlSt, blockSize: hfsVol.blockSize } : undefined, udfVol: archiveType === 'udf' ? { blockSize: udfVol.blockSize, partitionStart: udfVol.partitionStart } : undefined, fatVol: archiveType === 'fat' ? { bpb: fatVol.bpb, fat: fatVol.fat } : undefined }
         }, [channel.port2]);
       });
       // Load the HTML at its real archive-relative path so the browser resolves
@@ -2177,6 +2215,60 @@
         await applyFileDescriptions();
         return true;
       }
+      // Mount a FAT catalog into the tree (BFS, sorted entries, post-order completion).
+      async function mountFat(read, vol) {
+        const queue = [{ dir: { isRoot: true }, path: '', depth: 0 }];
+        const pending = new Map();
+        const lookup = (p) => nodeByPath.get(p);
+        while (queue.length > 0) {
+          if (gen !== parseGen) return false;
+          const dir = queue.shift();
+          const entries = await FAT.readDir(read, vol, dir.dir);
+          if (gen !== parseGen) return false;
+          let subdirs = 0;
+          for (const e of entries) {
+            const path = dir.path === '' ? '/' + e.name : dir.path + '/' + e.name;
+            const child = { name: e.name, path, isDir: e.isDir, size: e.size, depth: dir.depth + 1, date: '' };
+            if (!e.isDir) child.cluster = e.cluster;
+            allNodes.push(child);
+            nodeByPath.set(child.path, child);
+            appendTreeNode(child, child.depth, childBoxes, treeRoot);
+            appendFlatProgressive(child, flatList, lastChild);
+            if (child.isDir) {
+              dirSize.set(child.path, 0);
+              dirCount++;
+              subdirs++;
+              setDirLoading(child, true);
+              queue.push({ dir: { cluster: e.cluster, size: e.size }, path, depth: dir.depth + 1 });
+            } else {
+              onFileAdded(child, dirSize, nodeByPath);
+              fileCount++;
+              totalBytes += child.size;
+            }
+          }
+          pending.set(dir.path, subdirs);
+          if (subdirs === 0) completeDir(pending, lookup, dir.path);
+          mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, 'FAT');
+          mainStatusEl.classList.add('loading');
+          await new Promise(r => setTimeout(r, 0));
+        }
+        if (gen !== parseGen) return false;
+        mainStatusEl.textContent = fmtStatus(totalBytes, fileCount, dirCount, 'FAT');
+        mainStatusEl.classList.remove('loading');
+        const ordered = [];
+        (function walk(container) {
+          for (const el of container.children) {
+            const n = el._node;
+            if (!n) continue;
+            ordered.push(n);
+            const box = n.isDir ? childBoxes.get(n.path) : null;
+            if (box) walk(box);
+          }
+        })(treeRoot);
+        allNodes = ordered;
+        await applyFileDescriptions();
+        return true;
+      }
       if (fmt.type === 'udf') {
         archiveType = 'udf';
         await loadUdf();
@@ -2200,6 +2292,21 @@
         if (!vol) throw new Error('Apple Partition Map found, but no HFS Master Directory Block ("BD")');
         hfsVol = vol;
         await mountHfs(hfsRead, vol);
+        return;
+      }
+      if (fmt.type === 'fat') {
+        archiveType = 'fat';
+        await loadFat();
+        const fatRead = (off, len) => {
+          if (detectProbe && off + len <= detectProbe.length) return Promise.resolve(detectProbe.subarray(off, off + len));
+          return readRange(url, off, len);
+        };
+        const bpb = FAT.detectBoot(detectProbe);
+        if (gen !== parseGen) return;
+        if (!bpb) throw new Error('FAT boot sector found, but BPB is invalid');
+        const vol = await FAT.parseVolume(fatRead, bpb);
+        fatVol = vol;
+        await mountFat(fatRead, vol);
         return;
       }
       if (fmt.type === 'aif') {
